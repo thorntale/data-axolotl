@@ -16,6 +16,14 @@
 pip install axolotl
 ```
 
+## Development
+```sh
+python3 -m venv venv
+source venv/bin/activate
+pip install .
+
+```
+
 ## License
 
 `axolotl` is distributed under the terms of the [MIT](https://spdx.org/licenses/MIT.html) license.
