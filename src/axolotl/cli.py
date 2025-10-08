@@ -1,5 +1,7 @@
 import typer
 from typing import Optional
+from .state_connection import get_conn
+from .state_connection import get_snowflake_conn
 
 app = typer.Typer()
 
@@ -9,6 +11,8 @@ def run():
     """
     Execute a new run.
     """
+    state_conn = get_conn()
+    external_conn = get_snowflake_conn()
     typer.echo("Running...")
     # TODO: Implement run logic
     pass
@@ -19,6 +23,7 @@ def list():
     """
     Show past runs.
     """
+    state_conn = get_conn()
     typer.echo("Listing past runs...")
     # TODO: Implement list logic
     pass
@@ -32,6 +37,7 @@ def rm_run(id: str):
     Args:
         id: The ID of the run to remove
     """
+    state_conn = get_conn()
     typer.echo(f"Removing run: {id}")
     # TODO: Implement rm-run logic
     pass
@@ -47,6 +53,7 @@ def report(
     Args:
         run_options: Optional run options to configure report generation
     """
+    state_conn = get_conn()
     typer.echo(f"Generating report with options: {run_options}")
     # TODO: Implement report logic
     pass

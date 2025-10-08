@@ -18,9 +18,8 @@ pip install axolotl
 
 ## Development
 ```sh
-python3 -m venv venv
-source venv/bin/activate
-pip install .
+hatch env create
+hatch run python -m axolotl [args]
 
 ```
 
