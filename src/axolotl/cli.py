@@ -2,6 +2,7 @@ import typer
 from typing import Optional
 from .state_connection import get_conn, get_snowflake_conn, SnowflakeOptions
 from typing_extensions import Annotated
+from .state_dao import StateDAO
 
 app = typer.Typer()
 
@@ -18,9 +19,10 @@ def run(
     """
     Execute a new run.
     """
-    state_conn = get_conn()
 
     typer.echo("Running...")
+    state_conn = get_conn()
+    state = StateDAO(state_conn)
 
     options = SnowflakeOptions(
         account=account,
@@ -36,6 +38,9 @@ def run(
     # TODO: Implement run logic
     pass
 
+    with state.make_run() as run_id:
+        typer.echo(f"Running {run_id}...")
+        # TODO: Implement run logic
 
 @app.command()
 def list():
@@ -43,6 +48,8 @@ def list():
     Show past runs.
     """
     state_conn = get_conn()
+    state = StateDAO(state_conn)
+
     typer.echo("Listing past runs...")
     # TODO: Implement list logic
     pass
@@ -57,6 +64,8 @@ def rm_run(id: str):
         id: The ID of the run to remove
     """
     state_conn = get_conn()
+    state = StateDAO(state_conn)
+
     typer.echo(f"Removing run: {id}")
     # TODO: Implement rm-run logic
     pass
@@ -75,6 +84,8 @@ def report(
         run_options: Optional run options to configure report generation
     """
     state_conn = get_conn()
+    state = StateDAO(state_conn)
+
     typer.echo(f"Generating report with options: {run_options}")
     # TODO: Implement report logic
     pass

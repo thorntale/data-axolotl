@@ -1,5 +1,6 @@
 import sqlite3
-#from .snapshot_snowflake import scan_database
+
+# from .snapshot_snowflake import scan_database
 import snowflake.connector
 from pydantic import BaseModel
 from snowflake.connector import DictCursor
@@ -19,7 +20,7 @@ class SnowflakeOptions(BaseModel):
 
 def get_conn(options=None):
     # TODO: update this to take options
-    conn = sqlite3.connect("local.db")
+    conn = sqlite3.connect("local.db", isolation_level=None)
     return conn
 
 
@@ -38,26 +39,34 @@ def get_snowflake_conn(
     scan_database(conn, options)
     return
 
+
 #    //with conn.cursor(DictCursor) as cur:
 #    //    scan_database(cur, options)
 #
 #    //return conn
 #
-def scan_database(conn: snowflake.connector.SnowflakeConnection, options: SnowflakeOptions):
+def scan_database(
+    conn: snowflake.connector.SnowflakeConnection, options: SnowflakeOptions
+):
     with conn.cursor(DictCursor) as cur:
-        cur.execute(f"SELECT TABLE_NAME, CREATED, LAST_ALTERED FROM information_schema.tables WHERE table_schema = '{options.table_schema}'")
+        cur.execute(
+            f"SELECT TABLE_NAME, CREATED, LAST_ALTERED FROM information_schema.tables WHERE table_schema = '{options.table_schema}'"
+        )
 
         for table_rec in cur:
             scan_table(conn, options, table_rec["TABLE_NAME"])
 
-def scan_table(conn: snowflake.connector.SnowflakeConnection, options: SnowflakeOptions, table_name: str): 
+
+def scan_table(
+    conn: snowflake.connector.SnowflakeConnection,
+    options: SnowflakeOptions,
+    table_name: str,
+):
     with conn.cursor() as cur:
-        cur.execute(f"show columns in {options.database}.{options.table_schema}.{table_name}")
+        cur.execute(
+            f"show columns in {options.database}.{options.table_schema}.{table_name}"
+        )
 
         results = cur.fetchall()
-        for rec in results: 
-            print(f'{rec}')
-
-
-
-
+        for rec in results:
+            print(f"{rec}")
