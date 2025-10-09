@@ -1,7 +1,6 @@
 import typer
 from typing import Optional
-from .state_connection import get_conn
-from .state_connection import get_snowflake_conn
+from .state_connection import get_conn, get_snowflake_conn, SnowflakeOptions
 from typing_extensions import Annotated
 
 app = typer.Typer()
@@ -22,16 +21,17 @@ def run(
     state_conn = get_conn()
 
     typer.echo("Running...")
-    get_snowflake_conn(
-        {
-            "account": account,
-            "user": user,
-            "password": password,
-            "database": database,
-            "warehouse": warehouse,
-            "table_schema": table_schema,
-        }
+
+    options = SnowflakeOptions(
+        account=account,
+        user=user,
+        password=password,
+        database=database,
+        warehouse=warehouse,
+        table_schema=table_schema,
     )
+
+    get_snowflake_conn(options)
 
     # TODO: Implement run logic
     pass
