@@ -3,6 +3,7 @@ from typing import Any
 from typing import Optional
 from typing import NamedTuple
 from datetime import datetime
+from datetime import timezone
 from contextlib import contextmanager
 import json
 
@@ -97,14 +98,14 @@ class StateDAO:
         return [
             Run(
                 row[0],
-                datetime.fromisoformat(row[1]),
-                datetime.fromisoformat(row[2]) if row[2] else None,
+                datetime.fromisoformat(row[1]).replace(tzinfo=timezone.utc),
+                datetime.fromisoformat(row[2]).replace(tzinfo=timezone.utc) if row[2] else None,
                 None if row[3] is None else False if row[3] == 0 else True,
             )
             for row
             in self.query(f"""
                 SELECT run_id, started_at, finished_at, successful
-                FROM {p}thorntale_runs
+                FROM {p}thorntale_run
             """)
         ]
 
