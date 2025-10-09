@@ -2,18 +2,37 @@ import typer
 from typing import Optional
 from .state_connection import get_conn
 from .state_connection import get_snowflake_conn
+from typing_extensions import Annotated
 
 app = typer.Typer()
 
 
 @app.command()
-def run():
+def run(
+    account: Annotated[str, typer.Option(prompt=True)],
+    user: Annotated[str, typer.Option(prompt=True)],
+    password: Annotated[str, typer.Option(prompt=True)],
+    database: Annotated[str, typer.Option(prompt=True)],
+    warehouse: Annotated[str, typer.Option(prompt=True)],
+    table_schema: Annotated[str, typer.Option(prompt=True)],
+):
     """
     Execute a new run.
     """
     state_conn = get_conn()
-    external_conn = get_snowflake_conn()
+
     typer.echo("Running...")
+    get_snowflake_conn(
+        {
+            "account": account,
+            "user": user,
+            "password": password,
+            "database": database,
+            "warehouse": warehouse,
+            "table_schema": table_schema,
+        }
+    )
+
     # TODO: Implement run logic
     pass
 
@@ -45,7 +64,9 @@ def rm_run(id: str):
 
 @app.command()
 def report(
-    run_options: Optional[str] = typer.Argument(None, help="Run options for report generation")
+    run_options: Optional[str] = typer.Argument(
+        None, help="Run options for report generation"
+    )
 ):
     """
     Do only the report generation step of run.
