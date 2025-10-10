@@ -1,9 +1,13 @@
+from typing import Optional
+from typing_extensions import Annotated
+
 import typer
 from tabulate import tabulate
-from typing import Optional
+
 from .state_connection import get_conn
 from .state_connection import get_snowflake_conn
 from .state_dao import StateDAO
+from .metric_set import MetricSet
 
 app = typer.Typer()
 
@@ -70,7 +74,10 @@ def rm_run(id: int):
 
 @app.command()
 def report(
-    run_options: Optional[str] = typer.Argument(None, help="Run options for report generation")
+    run_id: Annotated[Optional[int], typer.Option(help="The run id to make a report on. Defaults to latest successful run.")] = None,
+    alerts: Annotated[bool, typer.Option(help="Include the alerting report")] = True,
+    history: Annotated[bool, typer.Option(help="Include the history report")] = True,
+    # run_options: Optional[str] = typer.Argument(None, help="Run options for report generation")
 ):
     """
     Do only the report generation step of run.
@@ -81,10 +88,37 @@ def report(
     state_conn = get_conn()
     state = StateDAO(state_conn)
 
-    typer.echo(f"Generating report with options: {run_options}")
-    # TODO: Implement report logic
-    pass
+    run_id = run_id or state.get_latest_successful_run_id()
+    if run_id is None:
+        print('No run found')
+        raise typer.Exit(code=1)
 
+    runs = state.get_all_runs()
+    if not run_id in [r.run_id for r in runs]:
+        print(f"Run {run_id} does not exist.")
+        raise typer.Exit(code=1)
+    if not run_id in [r.run_id for r in runs if r.successful]:
+        print(f"Run {run_id} was not successful.")
+        raise typer.Exit(code=1)
+
+    metrics = state.get_metrics(
+        run_id_lte=run_id,
+        only_successful=True,
+    )
+    filtered_runs = [
+        r for r in runs
+        if r.successful and r.run_id <= run_id
+    ]
+
+    metric_set = MetricSet(filtered_runs, metrics)
+
+    if alerts:
+        # TODO: generate alerting report
+        print('TODO: alerting report')
+
+    if history:
+        # TODO: generate history report
+        print('TODO: history report')
 
 def main():
     """Entry point for the CLI application."""
