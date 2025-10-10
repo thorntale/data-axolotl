@@ -5,7 +5,6 @@ from .state_connection import (
     get_conn,
     SnowflakeConn,
     SnowflakeOptions,
-    scan_database,
 )
 from typing_extensions import Annotated
 from .state_dao import StateDAO
@@ -44,12 +43,17 @@ def run(
     with state.make_run() as run_id:
         typer.echo(f"Running {run_id}...")
         #metrics = snowflake_conn.get_table_level_metrics(run_id)
-        metrics = snowflake_conn.snapshot(run_id)
+        try:
+            metrics = snowflake_conn.snapshot(run_id)
+        except Exception as e:
+            print(f"Error: {e}")
+            raise
+
         for m in metrics: 
             try:
                 state.record_metric(m)
             except Exception as e:
-                print(f"Error: {e}")
+                print(f"Error recording metric: {e}")
                 raise
 
         #print(metrics)

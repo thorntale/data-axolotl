@@ -1,6 +1,5 @@
 import sqlite3
 
-# from .snapshot_snowflake import scan_database
 import snowflake.connector
 from typing import NamedTuple, List, Optional, Tuple
 from snowflake.connector import DictCursor
@@ -33,87 +32,6 @@ class TableSummary(NamedTuple):
     last_altered: datetime
 
 
-
-class SnowflakeConn:
-    """
-    hacky mid-refactor, sorry
-    """
-
-    def __init__(self, options: SnowflakeOptions):
-        self.conn = snowflake.connector.connect(
-            **options._asdict(),
-        )
-        self.database = options.database
-        self.table_schema = options.table_schema
-    
-
-    def snapshot(self, run_id: str) -> List[Metric]:
-        metrics, table_names = self.scan_table_level_metrics(run_id)
-        return metrics
-
-    def scan_table_level_metrics(self, run_id: str) -> Tuple[List[Metric], List[str]]:
-        metrics = []
-        table_names = []  ## fully qualified table names
-
-        with self.conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT
-                    TABLE_CATALOG, 
-                    TABLE_SCHEMA, 
-                    TABLE_NAME, 
-                    ROW_COUNT, 
-                    BYTES, 
-                    LAST_ALTERED, 
-                    CURRENT_TIMESTAMP() as measured_at
-               FROM INFORMATION_SCHEMA.TABLES
-               WHERE TABLE_CATALOG = '{self.database}'
-               AND TABLE_SCHEMA = '{self.table_schema}';
-                """
-            )
-
-            for (
-                table_catalog,
-                table_schema,
-                table_name,
-                row_count,
-                table_bytes,
-                last_altered,
-                measured_at,
-            ) in cur:
-                table_names.append(f"{table_catalog}.{table_schema}.{table_name}")
-                print("??")
-
-                try:
-                    metrics.extend(
-                        [
-                            Metric(
-                                run_id=run_id,
-                                target_table=table_name,
-                                target_column=None,
-                                metric_name="row_count",
-                                metric_value=row_count,
-                                measured_at=measured_at,
-                            ),
-                            Metric(
-                                run_id=run_id,
-                                target_table=table_name,
-                                target_column=None,
-                                metric_name="bytes",
-                                metric_value=table_bytes,
-                                measured_at=measured_at,
-                            ),
-                        ]
-                    )
-                except Exception as e:
-                    print(f"Error: {e}")
-                    raise
-
-        return metrics, table_names
-
-
-## TODO: this is all old stuff that needs to be refactored
-
 SNOWFLAKE_NUMERIC_TYPES = [
     "NUMBER",
     "DECIMAL",
@@ -141,186 +59,288 @@ SNOWFLAKE_TEXT_TYPES = [
     "VARBINARY",
 ]
 
+SNOWFLAKE_DATETIME_TYPES = [
+    "DATE",
+    "DATETIME",
+    "TIME",
+    "TIMESTAMP",
+    "TIMESTAMP_LTZ",
+    "TIMESTAMP_NTZ",
+    "TIMESTAMP_TZ",
+]
+
+SNOWFLAKE_STRUCTURED_TYPES = [
+    "VARIANT",
+    "OBJECT",
+    "ARRAY",
+    "MAP",
+]
+
+
+SNOWFLAKE_UNSTRUCTURED_TYPES = [
+    "FILE",
+]
+
+SNOWFLAKE_VECTOR_TYPES = [
+    "VECTOR",
+]
+
+
+def get_simple_data_type(data_type: str) -> str:
+    data_type = data_type.upper()
+
+    if data_type == "BOOLEAN":
+        return "boolean"
+    if data_type in SNOWFLAKE_NUMERIC_TYPES:
+        return "numeric"
+    if data_type in SNOWFLAKE_TEXT_TYPES:
+        return "string"
+    if data_type in SNOWFLAKE_DATETIME_TYPES:
+        return "datetime"
+    if data_type in SNOWFLAKE_STRUCTURED_TYPES:
+        return "structured"
+    if data_type in SNOWFLAKE_UNSTRUCTURED_TYPES:
+        return "unstructured"
+    if data_type in SNOWFLAKE_VECTOR_TYPES:
+        return "vector"
+    else:
+        return "other"
+
+
+class SnowflakeConn:
+    """
+    Wraps a Snowflake conn in order to take a snapshot of one database and table_schema.
+    """
+
+    def __init__(self, options: SnowflakeOptions):
+        self.conn = snowflake.connector.connect(
+            **options._asdict(),
+        )
+        self.database = options.database
+        self.table_schema = options.table_schema
+
+    def snapshot(self, run_id: str) -> List[Metric]:
+        """
+        Capture metrics for all tables in the configured database/schema, both
+        table-level and column-level for all tables
+
+        Args:
+            run_id: Unique identifier for this snapshot run
+
+        Returns:
+            List of Metric objects containing all collected metrics
+        """
+        (metrics, table_names) = self.scan_table_level_metrics(run_id)
+        for table in table_names:
+            metrics.extend(self.snapshot_table(run_id, table))
+
+        return metrics
+
+    def scan_column(
+        self,
+        run_id: str,
+        fq_table_name: str,
+        column_name: str,
+        data_type: str,
+        is_nullable: str,
+    ) -> List[Metric]:
+        """
+        Scan a single column
+
+        Args:
+            run_id: Unique identifier for this snapshot run
+            fq_table_name: database.schema.table
+            column_name: Name of the column to scan
+            data_type: Snowflake data type of the column
+            is_nullable: 'YES' or 'NO', because Snowflake is like that
+
+        Returns:
+            List of Metrics for this column
+        """
+        data_type_simple = get_simple_data_type(data_type)
+        # metric name -> metric query
+        query_columns = {
+            "distinct_rate": f"100.0 * COUNT(DISTINCT({column_name})) / COUNT(*)",
+        }
+
+        if is_nullable == "YES":
+            query_columns.update(
+                {
+                    "null_count": f"COUNT_IF({column_name} IS NULL)",
+                    "null_pct": f"100.0 * COUNT_IF({column_name} IS NOT NULL) / COUNT(*)",
+                }
+            )
+
+        if data_type_simple == "numeric":
+            query_columns.update(
+                {
+                    "numeric_min": f"MIN({column_name})",
+                    "numeric_max": f"MAX({column_name})",
+                    "numeric_mean": f"AVG({column_name})",
+                    "numeric_mean": f"VARIANCE({column_name})",
+                }
+            )
+            ## TODO: percentiles and histograms
+        elif data_type_simple == "string":
+            query_columns.update(
+                {
+                    "string_avg_length": f"AVG(LEN({column_name}))",
+                }
+            )
+        elif data_type_simple == "boolean":
+            query_columns.update(
+                {
+                    "true_count": "COUNT_IF({column_name} = TRUE)",
+                    "false_count": "COUNT_IF({column_name} = FALSE)",
+                }
+            )
+        ## TODO: Stats for the other types
+
+        query = f"""
+            SELECT CURRENT_TIMESTAMP() as MEASURED_AT,
+            {",\n".join([f"{metric_query} AS {metric_name}" for (metric_name, metric_query) in query_columns.items()])} 
+            FROM {fq_table_name}
+        """
+
+        metrics: List[Metric] = []
+
+        with self.conn.cursor(DictCursor) as cur:
+            cur.execute(query)
+            results = cur.fetchone()
+            measured_at = results["MEASURED_AT"]  # snowflake uppercases column names.
+
+            for metric_name in query_columns:
+                metrics.append(
+                    Metric(
+                        run_id=run_id,
+                        target_table=fq_table_name,
+                        target_column=column_name,
+                        metric_name=metric_name,
+                        metric_value=results[metric_name.upper()],
+                        measured_at=measured_at,
+                    )
+                )
+
+        return metrics
+
+    def snapshot_table(self, run_id: str, table_name: str) -> List[Metric]:
+        """
+        Get all the columns in a table then snapshot each column.
+
+        Args:
+            run_id: Unique identifier for this snapshot run
+            table_name: Name of the table to scan (not fully qualified)
+
+        Returns:
+            List of Metrics for all columns in the table
+        """
+
+        print("scanning table", table_name)
+
+        fq_table_name = f"{self.database}.{self.table_schema}.{table_name}"
+
+        metrics: List[Metric] = []
+        with self.conn.cursor() as cur:
+            query = f"""
+                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_CATALOG = '{self.database}'
+                    AND TABLE_SCHEMA = '{self.table_schema}'
+                    AND TABLE_NAME = '{table_name}'
+                """
+            cur.execute(query)
+
+            ## FIXME: Dispatch these async
+            for column_name, data_type, is_nullable in cur:
+                metrics.extend(
+                    self.scan_column(
+                        run_id, fq_table_name, column_name, data_type, is_nullable
+                    )
+                )
+        return metrics
+
+    def scan_table_level_metrics(self, run_id: str) -> Tuple[List[Metric], List[str]]:
+        """
+        Collect table-level metrics for all tables in the configured database/schema.
+
+        Queries INFORMATION_SCHEMA.TABLES to collect metrics like row_count and bytes
+        for each table.
+
+        Args:
+            run_id: Unique identifier for this snapshot run
+
+        Returns:
+            Tuple containing:
+                - List of Metric objects with table-level metrics
+                - List of table names found in the schema
+        """
+        metrics = []
+        table_names = []  ## fully qualified table names
+
+        with self.conn.cursor() as cur:
+            try:
+                cur.execute(
+                    f"""
+                    SELECT
+                        TABLE_CATALOG, 
+                        TABLE_SCHEMA, 
+                        TABLE_NAME, 
+                        ROW_COUNT, 
+                        BYTES, 
+                        LAST_ALTERED, 
+                        CURRENT_TIMESTAMP() as measured_at
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_CATALOG = '{self.database}'
+                AND TABLE_SCHEMA = '{self.table_schema}';
+                    """
+                )
+
+            except Exception as e:
+                print(f"Error running table: {e}")
+                raise
+
+            for (
+                table_catalog,
+                table_schema,
+                table_name,
+                row_count,
+                table_bytes,
+                last_altered,
+                measured_at,
+            ) in cur:
+                table_names.append(table_name)
+                fq_table_name = f"{table_catalog}.{table_schema}.{table_name}"
+
+                try:
+                    metrics.extend(
+                        [
+                            Metric(
+                                run_id=run_id,
+                                target_table=fq_table_name,
+                                target_column=None,
+                                metric_name="row_count",
+                                metric_value=row_count,
+                                measured_at=measured_at,
+                            ),
+                            Metric(
+                                run_id=run_id,
+                                target_table=fq_table_name,
+                                target_column=None,
+                                metric_name="bytes",
+                                metric_value=table_bytes,
+                                measured_at=measured_at,
+                            ),
+                        ]
+                    )
+                except Exception as e:
+                    print(f"Error: {e}")
+                    raise
+
+        return metrics, table_names
+
 
 def get_conn(options=None):
     # TODO: update this to take options
     conn = sqlite3.connect("local.db", isolation_level=None)
     return conn
 
-
-def get_snowflake_conn(
-    options: SnowflakeOptions,
-) -> snowflake.connector.SnowflakeConnection:
-    conn = snowflake.connector.connect(
-        **options._asdict(),
-    )
-
-    # scan_database(conn, options)
-    return conn
-
-
-def scan_database(
-    conn: snowflake.connector.SnowflakeConnection,
-    options: SnowflakeOptions,
-    state: StateDAO,
-    run_id: int,
-):
-    tables = []
-
-    with conn.cursor(DictCursor) as cur:
-        cur.execute(
-            f"""
-            SELECT
-                TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ROW_COUNT, BYTES, LAST_ALTERED
-                FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_CATALOG = '{options.database}'
-                AND TABLE_SCHEMA = '{options.table_schema}';
-            """
-        )
-
-        for table_rec in cur:
-            print(f"{table_rec}")
-            tables.append(table_rec)
-
-    for t in tables:
-        scan_table(conn, t, state, run_id)
-
-
-def scan_table(
-    conn: snowflake.connector.SnowflakeConnection,
-    table_rec: dict,
-    state: StateDAO,
-    run_id: int,
-):
-    fq_tablename = f"{table_rec["TABLE_CATALOG"]}.{table_rec["TABLE_SCHEMA"]}.{table_rec["TABLE_NAME"]}"
-    cols: List[List[MetricQuery]] = []
-
-    with conn.cursor(DictCursor) as cur:
-        cur.execute(
-            f"""
-            SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
-                FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_CATALOG = '{table_rec["TABLE_CATALOG"]}'
-                AND TABLE_SCHEMA = '{table_rec["TABLE_SCHEMA"]}'
-                AND TABLE_NAME = '{table_rec["TABLE_NAME"]}';
-            """
-        )
-
-        for columnn_rec in cur:
-            c_name = columnn_rec["COLUMN_NAME"]
-            query_columns: List[MetricQuery] = []
-
-            query_columns.extend(
-                [
-                    MetricQuery(
-                        target_column=c_name,
-                        target_table=fq_tablename,
-                        metric_name="distinct_rate",
-                        metric_query=f"100.0 * COUNT(DISTINCT({c_name})) / COUNT(*)",
-                    ),
-                ]
-            )
-
-            if columnn_rec["IS_NULLABLE"] == "YES":
-                query_columns.extend(
-                    [
-                        MetricQuery(
-                            target_column=c_name,
-                            target_table=fq_tablename,
-                            metric_name="null_count",
-                            metric_query=f"COUNT_IF({c_name} IS NULL)",
-                        ),
-                        MetricQuery(
-                            target_column=c_name,
-                            target_table=fq_tablename,
-                            metric_name="null_pct",
-                            metric_query=f"100.0 * COUNT_IF({c_name} IS NOT NULL) / COUNT(*)",
-                        ),
-                    ]
-                )
-
-            ## These data type selectors should be fully distinct
-            if columnn_rec["DATA_TYPE"].upper() in SNOWFLAKE_NUMERIC_TYPES:
-                query_columns.extend(
-                    [
-                        MetricQuery(
-                            target_column=c_name,
-                            target_table=fq_tablename,
-                            metric_name="min",
-                            metric_query=f"MIN({c_name})",
-                        ),
-                        MetricQuery(
-                            target_column=c_name,
-                            target_table=fq_tablename,
-                            metric_name="max",
-                            metric_query=f"MAX({c_name})",
-                        ),
-                        MetricQuery(
-                            target_column=c_name,
-                            target_table=fq_tablename,
-                            metric_name="mean",
-                            metric_query=f"AVG({c_name})",
-                        ),
-                        MetricQuery(
-                            target_column=c_name,
-                            target_table=fq_tablename,
-                            metric_name="variance",
-                            metric_query=f"VARIANCE({c_name})",
-                        ),
-                    ]
-                    ## TODO: percentiles and histograms
-                )
-
-            elif columnn_rec["DATA_TYPE"].upper() in SNOWFLAKE_TEXT_TYPES:
-                query_columns.extend(
-                    [
-                        MetricQuery(
-                            target_column=c_name,
-                            target_table=fq_tablename,
-                            metric_name="avg_length",
-                            metric_query=f"AVG(LEN({c_name}))",
-                        ),
-                    ]
-                )
-
-            elif columnn_rec["DATA_TYPE"].upper() == "BOOLEAN":
-                query_columns.extend(
-                    [
-                        MetricQuery(
-                            target_column=c_name,
-                            target_table=fq_tablename,
-                            metric_name="true_count",
-                            metric_query=f"COUNT_IF({c_name} = TRUE)",
-                        ),
-                        MetricQuery(
-                            target_column=c_name,
-                            target_table=fq_tablename,
-                            metric_name="false_count",
-                            metric_query=f"COUNT_IF({c_name} = FALSE)",
-                        ),
-                    ],
-                )
-
-            cols.append(query_columns)
-
-    print(len(cols))
-
-    for query_columns in cols:
-        query = f"""
-            SELECT {",\n".join([f"{m.metric_query} AS {m.metric_name}" for m in query_columns])} 
-            FROM {fq_tablename}
-        """
-
-        print(query)
-        print(query_columns[0].target_column)
-        with conn.cursor(DictCursor) as cur:
-            cur.execute(query)
-
-            for r in cur:
-                print(f"{r}")
-                for k in r.keys():
-                    state.record_metric(
-                        run_id, fq_tablename, query_columns[0].target_column, k, r[k]
-                    )
-
-    # return query_columns
