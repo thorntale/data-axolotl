@@ -5,7 +5,7 @@ from typing import NamedTuple
 from datetime import datetime
 from datetime import timezone
 from contextlib import contextmanager
-import json
+import simplejson as json
 
 
 class Run(NamedTuple):
