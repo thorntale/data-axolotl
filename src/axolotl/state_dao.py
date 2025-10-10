@@ -5,7 +5,7 @@ from typing import NamedTuple
 from datetime import datetime
 from datetime import timezone
 from contextlib import contextmanager
-import json
+import simplejson as json
 
 
 class Run(NamedTuple):
@@ -127,14 +127,14 @@ class StateDAO:
             [run_id],
         )
 
-    def record_metric(self, run_id: int, target_table: str, target_column: str, metric_name: str, metric_value: Any):
+    def record_metric(self, metric: Metric):
         p = self.table_prefix
         self.query(
             f"""
                 INSERT INTO {p}thorntale_metric (run_id, target_table, target_column, metric_name, metric_value)
                 VALUES (?, ?, ?, ?, ?)
             """,
-            [run_id, target_table, target_column, metric_name, json.dumps(metric_value)],
+            [metric.run_id, metric.target_table, metric.target_column, metric.metric_name, json.dumps(metric.metric_value)],
         )
 
     def get_metrics(

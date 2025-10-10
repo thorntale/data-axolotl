@@ -3,9 +3,11 @@ from typing_extensions import Annotated
 
 import typer
 from tabulate import tabulate
-
-from .state_connection import get_conn
-from .state_connection import get_snowflake_conn
+from .state_connection import (
+    get_conn,
+    SnowflakeConn,
+    SnowflakeOptions,
+)
 from .state_dao import StateDAO
 from .metric_set import MetricSet
 
@@ -13,17 +15,54 @@ app = typer.Typer()
 
 
 @app.command()
-def run():
+def run(
+    account: Annotated[str, typer.Option(prompt=True)],
+    user: Annotated[str, typer.Option(prompt=True)],
+    password: Annotated[str, typer.Option(prompt=True)],
+    database: Annotated[str, typer.Option(prompt=True)],
+    warehouse: Annotated[str, typer.Option(prompt=True)],
+    table_schema: Annotated[str, typer.Option(prompt=True)],
+):
     """
     Execute a new run.
     """
+
+    typer.echo("Running...")
     state_conn = get_conn()
     state = StateDAO(state_conn)
-    external_conn = get_snowflake_conn()
+
+    options = SnowflakeOptions(
+        account=account,
+        user=user,
+        password=password,
+        database=database,
+        warehouse=warehouse,
+        table_schema=table_schema,
+    )
+    snowflake_conn = SnowflakeConn(options)
+
 
     with state.make_run() as run_id:
         typer.echo(f"Running {run_id}...")
+        #metrics = snowflake_conn.get_table_level_metrics(run_id)
+        try:
+            metrics = snowflake_conn.snapshot(run_id)
+        except Exception as e:
+            print(f"Error: {e}")
+            raise
+
+        for m in metrics:
+            try:
+                state.record_metric(m)
+            except Exception as e:
+                print(f"Error recording metric: {e}")
+                raise
+
+        #print(metrics)
+        #scan_database(snowflake_conn, options, state, run_id)
+
         # TODO: Implement run logic
+
 
 @app.command()
 def list():
@@ -77,7 +116,6 @@ def report(
     run_id: Annotated[Optional[int], typer.Option(help="The run id to make a report on. Defaults to latest successful run.")] = None,
     alerts: Annotated[bool, typer.Option(help="Include the alerting report")] = True,
     history: Annotated[bool, typer.Option(help="Include the history report")] = True,
-    # run_options: Optional[str] = typer.Argument(None, help="Run options for report generation")
 ):
     """
     Do only the report generation step of run.
