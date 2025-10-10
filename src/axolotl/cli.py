@@ -1,6 +1,11 @@
 import typer
 from typing import Optional
-from .state_connection import get_conn, get_snowflake_conn, SnowflakeOptions
+from .state_connection import (
+    get_conn,
+    SnowflakeConn,
+    SnowflakeOptions,
+    scan_database,
+)
 from typing_extensions import Annotated
 from .state_dao import StateDAO
 
@@ -32,15 +37,23 @@ def run(
         warehouse=warehouse,
         table_schema=table_schema,
     )
+    snowflake_conn = SnowflakeConn(options)
 
-    get_snowflake_conn(options)
 
-    # TODO: Implement run logic
-    pass
 
     with state.make_run() as run_id:
         typer.echo(f"Running {run_id}...")
+        #metrics = snowflake_conn.get_table_level_metrics(run_id)
+        metrics = snowflake_conn.snapshot(run_id)
+        for m in metrics: 
+            print(m)
+            state.record_metric(**m)
+
+        #print(metrics)
+        #scan_database(snowflake_conn, options, state, run_id)
+
         # TODO: Implement run logic
+
 
 @app.command()
 def list():
