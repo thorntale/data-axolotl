@@ -33,9 +33,10 @@ class TableSummary(NamedTuple):
     last_altered: datetime
 
 
+
 class SnowflakeConn:
     """
-    Wraps a Snowflake connection objec.
+    hacky mid-refactor, sorry
     """
 
     def __init__(self, options: SnowflakeOptions):
@@ -47,19 +48,13 @@ class SnowflakeConn:
     
 
     def snapshot(self, run_id: str) -> List[Metric]:
-        print("what")
         metrics, table_names = self.scan_table_level_metrics(run_id)
-        print(metrics)
-
         return metrics
-
-
 
     def scan_table_level_metrics(self, run_id: str) -> Tuple[List[Metric], List[str]]:
         metrics = []
         table_names = []  ## fully qualified table names
 
-        print("what")
         with self.conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -114,7 +109,6 @@ class SnowflakeConn:
                     print(f"Error: {e}")
                     raise
 
-        print(metrics)
         return metrics, table_names
 
 

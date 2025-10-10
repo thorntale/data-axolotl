@@ -1,4 +1,5 @@
 import typer
+from tabulate import tabulate
 from typing import Optional
 from .state_connection import (
     get_conn,
@@ -40,14 +41,16 @@ def run(
     snowflake_conn = SnowflakeConn(options)
 
 
-
     with state.make_run() as run_id:
         typer.echo(f"Running {run_id}...")
         #metrics = snowflake_conn.get_table_level_metrics(run_id)
         metrics = snowflake_conn.snapshot(run_id)
         for m in metrics: 
-            print(m)
-            state.record_metric(**m)
+            try:
+                state.record_metric(m)
+            except Exception as e:
+                print(f"Error: {e}")
+                raise
 
         #print(metrics)
         #scan_database(snowflake_conn, options, state, run_id)
@@ -63,13 +66,29 @@ def list():
     state_conn = get_conn()
     state = StateDAO(state_conn)
 
-    typer.echo("Listing past runs...")
-    # TODO: Implement list logic
-    pass
+    runs = sorted(state.get_all_runs(), key=lambda r: r.run_id)
+
+    print(tabulate(
+        [
+            [
+                run.run_id,
+                run.started_at and run.started_at.strftime("%d-%m-%Y %H:%M:%S %Z"),
+                run.finished_at and run.finished_at.strftime("%d-%m-%Y %H:%M:%S %Z"),
+                run.successful,
+            ]
+            for run in runs
+        ],
+        headers=[
+            "id",
+            "Started At",
+            "Finished At",
+            "Successful",
+        ],
+    ))
 
 
 @app.command()
-def rm_run(id: str):
+def rm_run(id: int):
     """
     Remove a past run from the state db.
 
@@ -78,10 +97,12 @@ def rm_run(id: str):
     """
     state_conn = get_conn()
     state = StateDAO(state_conn)
-
-    typer.echo(f"Removing run: {id}")
-    # TODO: Implement rm-run logic
-    pass
+    runs = state.get_all_runs()
+    if id in [run.run_id for run in runs]:
+        state.delete_run(id)
+        typer.echo(f"Removed run {id}")
+    else:
+        typer.echo(f"Run {id} does not exist")
 
 
 @app.command()
