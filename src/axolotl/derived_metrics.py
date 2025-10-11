@@ -9,7 +9,7 @@ from .state_dao import Metric
 
 def staleness_hours(values: List[Metric], run_times_by_id: Dict[int, datetime]) -> List[Metric]:
     return [
-        v.replace(
+        v._replace(
             metric_name='staleness_hours',
             metric_value=(
                 None

@@ -180,7 +180,7 @@ class StateDAO:
             for row
             in self.query(f"""
                 SELECT run_id, target_table, target_column, metric_name, metric_value, measured_at
-                FROM {p}thorntale_runs
+                FROM {p}thorntale_metric
                 WHERE 1 = 1 {where_clause}
             """, where_values)
         ]

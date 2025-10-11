@@ -4,6 +4,8 @@ from typing import Optional
 from typing import Any
 from enum import Enum
 from abc import ABC, abstractmethod
+from datetime import datetime
+import humanize
 
 from .state_dao import Metric
 
@@ -40,6 +42,9 @@ class AlertMethod(Enum):
 
 
 class MetricTracker(ABC):
+    pretty_name: str = "<pretty_name>"
+    description: str = "<description>"
+
     key: MetricKey
     values: List[Metric]
 
@@ -176,7 +181,9 @@ class TableSizeTracker(NumericMetricTracker):
     description = "Size of table"
 
     # @override
-    def value_formatter(self, value: int) -> str:
+    def value_formatter(self, value: Optional[int]) -> str:
+        if value is None:
+            return super().value_formatter(value)
         return humanize.naturalsize(value)
 
 
@@ -209,5 +216,5 @@ class TableStalenessTracker(NumericMetricTracker):
     description = "How long ago the table was last updated"
     def value_formatter(self, value: int) -> str:
         if value is None:
-            return super.value_formatter(value)
-        return super.value_formatter(value) + ' hours'
+            return super().value_formatter(value)
+        return super().value_formatter(value) + ' hours'

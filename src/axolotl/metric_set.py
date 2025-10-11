@@ -50,8 +50,8 @@ class MetricSet:
     def get_metric_trackers_for_table(self, table: str) -> List[MetricTracker]:
         return [
             TableSizeTracker(
-                MetricKey(table, None, 'table_size'),
-                self._get_metric_with_nulls(MetricKey(table, None, 'table_size')),
+                MetricKey(table, None, 'bytes'),
+                self._get_metric_with_nulls(MetricKey(table, None, 'bytes')),
             ),
             TableRowCountTracker(
                 MetricKey(table, None, 'row_count'),
@@ -118,4 +118,4 @@ class MetricSet:
             )
             for run_id in missing_run_ids
         ]
-        return sorted(matching_metrics + null_metrics, key=lambda m: r.run_id)
+        return sorted(matching_metrics + null_metrics, key=lambda m: m.run_id)

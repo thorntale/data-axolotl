@@ -10,6 +10,7 @@ from .state_connection import (
 )
 from .state_dao import StateDAO
 from .metric_set import MetricSet
+from .history_report import HistoryReport
 
 app = typer.Typer()
 
@@ -155,8 +156,7 @@ def report(
         print('TODO: alerting report')
 
     if history:
-        # TODO: generate history report
-        print('TODO: history report')
+        HistoryReport(metric_set).print()
 
 def main():
     """Entry point for the CLI application."""
