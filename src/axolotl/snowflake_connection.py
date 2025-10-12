@@ -2,6 +2,43 @@ import snowflake.connector
 from typing import NamedTuple, List, Tuple
 from snowflake.connector import DictCursor
 from .state_dao import Metric
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+import time
+
+
+## TODO: percentiles and histograms
+##        complex_queries = {
+##            "numeric_percentiles": f"""
+##                        WITH percentile_state AS (
+##                            SELECT
+##                                APPROX_PERCENTILE_ACCUMULATE({column_name}) AS {column_name}_STATE
+##                            FROM {fq_table_name}
+##                        )
+##                        SELECT OBJECT_CONSTRUCT(
+##                            '10p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.10),
+##                            '20p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.20),
+##                            '30p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.30),
+##                            '40p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.40),
+##                            '50p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.50),
+##                            '60p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.60),
+##                            '70p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.70),
+##                            '80p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.80),
+##                            '90p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.90),
+##                            '95p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.95),
+##                            '99p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.99)
+##                        ) as numeric_percentiles
+##                        FROM percentile_state AS s;
+##                    """,
+##        }
+##
+
+
+class ColumnInfo(NamedTuple):
+    fq_table_name: str
+    column_name: str
+    data_type: str
+    is_nullable: str
 
 
 class SnowflakeOptions(NamedTuple):
@@ -92,14 +129,15 @@ class SnowflakeConn:
     Wraps a Snowflake conn in order to take a snapshot of one database and table_schema.
     """
 
-    def __init__(self, options: SnowflakeOptions):
+    def __init__(self, options: SnowflakeOptions, run_id: int):
         self.conn = snowflake.connector.connect(
             **options._asdict(),
         )
         self.database = options.database
         self.table_schema = options.table_schema
+        self.run_id = run_id
 
-    def snapshot(self, run_id: str) -> List[Metric]:
+    def snapshot(self, batch_size=10) -> Iterator[List[Metric]]:
         """
         Capture metrics for all tables in the configured database/schema, both
         table-level and column-level for all tables
@@ -110,19 +148,42 @@ class SnowflakeConn:
         Returns:
             List of Metric objects containing all collected metrics
         """
-        (metrics, table_names) = self.scan_table_level_metrics(run_id)
-        for table in table_names:
-            metrics.extend(self.snapshot_table(run_id, table))
 
-        return metrics
+        t0 = time.time()
+        (metrics, table_names) = self.scan_table_level_metrics()
+        t1 = time.time()  ## Time it took to scan the table metrics
 
+        print(
+            f"Found {len(table_names)} tables in {round(t1-t0, 2)} seconds. Enumerating columns..."
+        )
+
+        all_column_infos = [
+            column_info
+            for table in table_names
+            for column_info in self.list_columns(table)
+        ]
+
+        # it feels a little dirty to yield this here, but oh well.
+        yield metrics
+
+        print(f"Snapshotting {len(all_column_infos)} columns...")
+        executor = ThreadPoolExecutor(max_workers=batch_size)
+        try:
+            for column_metrics in executor.map(
+                self.scan_column, all_column_infos, chunksize=1
+            ):
+                yield column_metrics
+        finally:
+            # wait for all queries to complete before returning
+            executor.shutdown(wait=True)
+            t2 = time.time()  ## Time at which we finished scanning all the columns
+
+            print(f"Snapshotted columns in {round(t2-t1, 2)} seconds")
+
+    ## TODO: handle histograms and percentiles.
     def scan_column(
         self,
-        run_id: str,
-        fq_table_name: str,
-        column_name: str,
-        data_type: str,
-        is_nullable: str,
+        column_info: ColumnInfo,
     ) -> List[Metric]:
         """
         Scan a single column
@@ -137,6 +198,9 @@ class SnowflakeConn:
         Returns:
             List of Metrics for this column
         """
+        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        print(f"scanning {fq_table_name}.{column_name}")
+
         data_type_simple = get_simple_data_type(data_type)
 
         # metric name -> metric query
@@ -144,30 +208,6 @@ class SnowflakeConn:
 
         query_columns = {
             "distinct_rate": f"100.0 * COUNT(DISTINCT({column_name})) / COUNT(*)",
-        }
-
-        complex_queries = {
-            "numeric_percentiles": f"""
-                        WITH percentile_state AS (
-                            SELECT
-                                APPROX_PERCENTILE_ACCUMULATE({column_name}) AS {column_name}_STATE
-                            FROM {fq_table_name}
-                        )
-                        SELECT OBJECT_CONSTRUCT(
-                            '10p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.10),
-                            '20p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.20),
-                            '30p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.30),
-                            '40p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.40),
-                            '50p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.50),
-                            '60p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.60),
-                            '70p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.70),
-                            '80p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.80),
-                            '90p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.90),
-                            '95p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.95),
-                            '99p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.99)
-                        ) as numeric_percentiles
-                        FROM percentile_state AS s;
-                    """,
         }
 
         if is_nullable == "YES":
@@ -210,16 +250,39 @@ class SnowflakeConn:
         """
 
         metrics: List[Metric] = []
+        # query_ids = []
 
         with self.conn.cursor(DictCursor) as cur:
             cur.execute(query)
+            # return cur.query_id
+
+            # query_ids.append(cur.sfqid)
             results = cur.fetchone()
             measured_at = results["MEASURED_AT"]  # snowflake uppercases column names.
-
             for metric_name in query_columns:
                 metrics.append(
                     Metric(
-                        run_id=run_id,
+                        run_id=self.run_id,
+                        target_table=fq_table_name,
+                        target_column=column_name,
+                        metric_name=metric_name,
+                        metric_value=results[metric_name.upper()],
+                        measured_at=measured_at,
+                    )
+                )
+
+        ## TODO: histograms and percentiles
+        with self.conn.cursor(DictCursor) as cur:
+            cur.execute(query)
+            # return cur.query_id
+
+            # query_ids.append(cur.sfqid)
+            results = cur.fetchone()
+            measured_at = results["MEASURED_AT"]  # snowflake uppercases column names.
+            for metric_name in query_columns:
+                metrics.append(
+                    Metric(
+                        run_id=self.run_id,
                         target_table=fq_table_name,
                         target_column=column_name,
                         metric_name=metric_name,
@@ -229,24 +292,21 @@ class SnowflakeConn:
                 )
 
         return metrics
+        # return query_id
 
-    def snapshot_table(self, run_id: str, table_name: str) -> List[Metric]:
+    def list_columns(self, table_name: str) -> List[ColumnInfo]:
         """
-        Get all the columns in a table then snapshot each column.
+        List all columns in a table.
 
         Args:
-            run_id: Unique identifier for this snapshot run
-            table_name: Name of the table to scan (not fully qualified)
+            table_name: Name of the table to list columns for
 
         Returns:
-            List of Metrics for all columns in the table
+            ColumnInfo: all the information to scan the column
         """
-
-        print("scanning table", table_name)
+        column_info_arr: List[ColumnInfo] = []
 
         fq_table_name = f"{self.database}.{self.table_schema}.{table_name}"
-
-        metrics: List[Metric] = []
         with self.conn.cursor() as cur:
             query = f"""
                 SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
@@ -257,16 +317,18 @@ class SnowflakeConn:
                 """
             cur.execute(query)
 
-            ## FIXME: Dispatch these async
             for column_name, data_type, is_nullable in cur:
-                metrics.extend(
-                    self.scan_column(
-                        run_id, fq_table_name, column_name, data_type, is_nullable
+                column_info_arr.append(
+                    ColumnInfo(
+                        fq_table_name=fq_table_name,
+                        column_name=column_name,
+                        data_type=data_type,
+                        is_nullable=is_nullable,
                     )
                 )
-        return metrics
+        return column_info_arr
 
-    def scan_table_level_metrics(self, run_id: str) -> Tuple[List[Metric], List[str]]:
+    def scan_table_level_metrics(self) -> Tuple[List[Metric], List[str]]:
         """
         Collect table-level metrics for all tables in the configured database/schema.
 
@@ -322,7 +384,7 @@ class SnowflakeConn:
                     metrics.extend(
                         [
                             Metric(
-                                run_id=run_id,
+                                run_id=self.run_id,
                                 target_table=fq_table_name,
                                 target_column=None,
                                 metric_name="row_count",
@@ -330,7 +392,7 @@ class SnowflakeConn:
                                 measured_at=measured_at,
                             ),
                             Metric(
-                                run_id=run_id,
+                                run_id=self.run_id,
                                 target_table=fq_table_name,
                                 target_column=None,
                                 metric_name="bytes",
