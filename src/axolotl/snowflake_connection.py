@@ -137,7 +137,7 @@ class SnowflakeConn:
         self.table_schema = options.table_schema
         self.run_id = run_id
 
-    def snapshot(self, batch_size=10) -> Iterator[List[Metric]]:
+    def snapshot(self, batch_size=20) -> Iterator[List[Metric]]:
         """
         Capture metrics for all tables in the configured database/schema, both
         table-level and column-level for all tables
@@ -157,16 +157,16 @@ class SnowflakeConn:
             f"Found {len(table_names)} tables in {round(t1-t0, 2)} seconds. Enumerating columns..."
         )
 
+        yield metrics
+
         all_column_infos = [
             column_info
             for table in table_names
             for column_info in self.list_columns(table)
         ]
 
-        # it feels a little dirty to yield this here, but oh well.
-        yield metrics
-
         print(f"Snapshotting {len(all_column_infos)} columns...")
+
         executor = ThreadPoolExecutor(max_workers=batch_size)
         try:
             for column_metrics in executor.map(
@@ -180,7 +180,108 @@ class SnowflakeConn:
 
             print(f"Snapshotted columns in {round(t2-t1, 2)} seconds")
 
-    ## TODO: handle histograms and percentiles.
+    ## Hstograms and percentiles
+    def scan_column_complex_queries(
+        self,
+        column_info: ColumnInfo,
+    ) -> List[Metric]:
+        """
+        Get histogram and percentile metrics, if this column is a numeric or datetime type.
+        """
+
+        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        data_type_simple = get_simple_data_type(data_type)
+        num_buckets = 10
+
+        try:
+            percentile_query = f"""
+                        WITH percentile_state AS (
+                            SELECT
+                                APPROX_PERCENTILE_ACCUMULATE({column_name}) AS {column_name}_STATE
+                            FROM {fq_table_name}
+                        )
+                        SELECT CURRENT_TIMESTAMP() as MEASURED_AT,
+                        OBJECT_CONSTRUCT(
+                            '10p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.10),
+                            '20p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.20),
+                            '30p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.30),
+                            '40p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.40),
+                            '50p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.50),
+                            '60p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.60),
+                            '70p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.70),
+                            '80p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.80),
+                            '90p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.90),
+                            '95p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.95),
+                            '99p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.99)
+                        ) as NUMERIC_PERCENTILES
+                        FROM percentile_state AS s;
+                    """
+
+            histogram_query = f"""
+                        WITH cte AS (
+                            SELECT
+                                MIN({column_name}) AS {column_name}_MIN,
+                                MAX({column_name}) AS {column_name}_MAX,
+                                    ({column_name}_MAX - {column_name}_MIN) / {num_buckets} AS BUCKET_SIZE
+                            FROM {fq_table_name}
+                        ),
+                        histogram_buckets AS (
+                            SELECT
+                                WIDTH_BUCKET({column_name},
+                                    (SELECT {column_name}_MIN FROM cte),
+                                    (SELECT {column_name}_MAX FROM cte),
+                                    {num_buckets}
+                                ) * (SELECT BUCKET_SIZE FROM cte) as bucket,
+                                COUNT(*) as count
+                            FROM {fq_table_name}
+                            GROUP BY bucket
+                        )
+                        SELECT
+                            CURRENT_TIMESTAMP() as MEASURED_AT,
+                            OBJECT_AGG(bucket::VARCHAR, count) as NUMERIC_HISTOGRAM
+                        FROM histogram_buckets;
+                    """
+            print(histogram_query)
+
+            metrics = []
+
+            ## TODO: is it more efficient to merge these into one join instead of repeated scans?
+            with self.conn.cursor(DictCursor) as cur:
+                cur.execute(percentile_query)
+                results = cur.fetchone()
+                measured_at = results["MEASURED_AT"]
+                metrics.append(
+                    Metric(
+                        run_id=self.run_id,
+                        target_table=fq_table_name,
+                        target_column=column_name,
+                        metric_name="numeric_percentiles",
+                        metric_value=results["NUMERIC_PERCENTILES"],
+                        measured_at=measured_at,
+                    )
+                )
+
+            with self.conn.cursor(DictCursor) as cur:
+                cur.execute(histogram_query)
+                results = cur.fetchone()
+                measured_at = results["MEASURED_AT"]
+                metrics.append(
+                    Metric(
+                        run_id=self.run_id,
+                        target_table=fq_table_name,
+                        target_column=column_name,
+                        metric_name="numeric_histogram",
+                        metric_value=results["NUMERIC_HISTOGRAM"],
+                        measured_at=measured_at,
+                    )
+                )
+        except Exception as e:
+            print(f"Error running compelx queries: {e}")
+            raise
+
+        print("complex metrics", metrics)
+        return metrics
+
     def scan_column(
         self,
         column_info: ColumnInfo,
@@ -218,7 +319,7 @@ class SnowflakeConn:
                 }
             )
 
-        if data_type_simple == "numeric":
+        if data_type_simple == "numeric" or data_type_simple == "datetime":
             query_columns.update(
                 {
                     "numeric_min": f"MIN({column_name})",
@@ -227,7 +328,7 @@ class SnowflakeConn:
                     "numeric_mean": f"VARIANCE({column_name})",
                 }
             )
-            ## TODO: percentiles and histograms
+
         elif data_type_simple == "string":
             query_columns.update(
                 {
@@ -271,25 +372,11 @@ class SnowflakeConn:
                     )
                 )
 
-        ## TODO: histograms and percentiles
-        with self.conn.cursor(DictCursor) as cur:
-            cur.execute(query)
-            # return cur.query_id
-
-            # query_ids.append(cur.sfqid)
-            results = cur.fetchone()
-            measured_at = results["MEASURED_AT"]  # snowflake uppercases column names.
-            for metric_name in query_columns:
-                metrics.append(
-                    Metric(
-                        run_id=self.run_id,
-                        target_table=fq_table_name,
-                        target_column=column_name,
-                        metric_name=metric_name,
-                        metric_value=results[metric_name.upper()],
-                        measured_at=measured_at,
-                    )
-                )
+        if data_type_simple == "numeric" or data_type_simple == "datetime":
+            metrics.extend(self.scan_column_complex_queries(column_info))
+            print("extended col ", column_name)
+        else:
+            print("nonnumeric col ", column_name)
 
         return metrics
         # return query_id
@@ -326,6 +413,7 @@ class SnowflakeConn:
                         is_nullable=is_nullable,
                     )
                 )
+
         return column_info_arr
 
     def scan_table_level_metrics(self) -> Tuple[List[Metric], List[str]]:
