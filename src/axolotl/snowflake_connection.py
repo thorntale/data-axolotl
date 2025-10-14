@@ -180,8 +180,7 @@ class SnowflakeConn:
 
             print(f"Snapshotted columns in {round(t2-t1, 2)} seconds")
 
-    ## Hstograms and percentiles
-    def scan_column_complex_queries(
+    def scan_numeric_column(
         self,
         column_info: ColumnInfo,
     ) -> List[Metric]:
@@ -191,60 +190,64 @@ class SnowflakeConn:
 
         (fq_table_name, column_name, data_type, is_nullable) = column_info
         data_type_simple = get_simple_data_type(data_type)
+
+        if data_type_simple != "numeric":
+            print(f"not numeric: {fq_table_name}.{column_name}: {data_type_simple}")
+            return []
+
         num_buckets = 10
+        percentile_query = f"""
+                    WITH percentile_state AS (
+                        SELECT
+                            APPROX_PERCENTILE_ACCUMULATE({column_name}) AS {column_name}_STATE
+                        FROM {fq_table_name}
+                    )
+                    SELECT CURRENT_TIMESTAMP() as MEASURED_AT,
+                    OBJECT_CONSTRUCT(
+                        '10p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.10),
+                        '20p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.20),
+                        '30p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.30),
+                        '40p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.40),
+                        '50p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.50),
+                        '60p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.60),
+                        '70p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.70),
+                        '80p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.80),
+                        '90p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.90),
+                        '95p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.95),
+                        '99p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.99)
+                    ) as NUMERIC_PERCENTILES
+                    FROM percentile_state AS s;
+                """
+
+        histogram_query = f"""
+                    WITH cte AS (
+                        SELECT
+                            MIN({column_name}) AS {column_name}_MIN,
+                            MAX({column_name}) AS {column_name}_MAX,
+                            LEAST({column_name}_MAX - {column_name}_MIN, {num_buckets}) AS NUM_BUCKETS,
+                            ({column_name}_MAX - {column_name}_MIN) / {num_buckets} AS BUCKET_SIZE
+                        FROM {fq_table_name}
+                    ),
+                    histogram_buckets AS (
+                        SELECT
+                            WIDTH_BUCKET({column_name},
+                                (SELECT {column_name}_MIN FROM cte),
+                                (SELECT {column_name}_MAX FROM cte),
+                                (SELECT NUM_BUCKETS FROM cte)
+                            ) * (SELECT BUCKET_SIZE FROM cte) as bucket,
+                            COUNT(*) as count
+                        FROM {fq_table_name}
+                        GROUP BY bucket
+                    )
+                    SELECT
+                        CURRENT_TIMESTAMP() as MEASURED_AT,
+                        OBJECT_AGG(bucket::VARCHAR, count) as NUMERIC_HISTOGRAM
+                    FROM histogram_buckets;
+                """
+
+        metrics = []
 
         try:
-            percentile_query = f"""
-                        WITH percentile_state AS (
-                            SELECT
-                                APPROX_PERCENTILE_ACCUMULATE({column_name}) AS {column_name}_STATE
-                            FROM {fq_table_name}
-                        )
-                        SELECT CURRENT_TIMESTAMP() as MEASURED_AT,
-                        OBJECT_CONSTRUCT(
-                            '10p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.10),
-                            '20p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.20),
-                            '30p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.30),
-                            '40p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.40),
-                            '50p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.50),
-                            '60p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.60),
-                            '70p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.70),
-                            '80p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.80),
-                            '90p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.90),
-                            '95p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.95),
-                            '99p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.99)
-                        ) as NUMERIC_PERCENTILES
-                        FROM percentile_state AS s;
-                    """
-
-            histogram_query = f"""
-                        WITH cte AS (
-                            SELECT
-                                MIN({column_name}) AS {column_name}_MIN,
-                                MAX({column_name}) AS {column_name}_MAX,
-                                    ({column_name}_MAX - {column_name}_MIN) / {num_buckets} AS BUCKET_SIZE
-                            FROM {fq_table_name}
-                        ),
-                        histogram_buckets AS (
-                            SELECT
-                                WIDTH_BUCKET({column_name},
-                                    (SELECT {column_name}_MIN FROM cte),
-                                    (SELECT {column_name}_MAX FROM cte),
-                                    {num_buckets}
-                                ) * (SELECT BUCKET_SIZE FROM cte) as bucket,
-                                COUNT(*) as count
-                            FROM {fq_table_name}
-                            GROUP BY bucket
-                        )
-                        SELECT
-                            CURRENT_TIMESTAMP() as MEASURED_AT,
-                            OBJECT_AGG(bucket::VARCHAR, count) as NUMERIC_HISTOGRAM
-                        FROM histogram_buckets;
-                    """
-            print(histogram_query)
-
-            metrics = []
-
             ## TODO: is it more efficient to merge these into one join instead of repeated scans?
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute(percentile_query)
@@ -260,7 +263,11 @@ class SnowflakeConn:
                         measured_at=measured_at,
                     )
                 )
+        except Exception as e:
+            print(f"Error running percentile query: {e}, {percentile_query}")
+            raise
 
+        try:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute(histogram_query)
                 results = cur.fetchone()
@@ -276,10 +283,112 @@ class SnowflakeConn:
                     )
                 )
         except Exception as e:
-            print(f"Error running compelx queries: {e}")
+            print(f"Error running histogram query: {e}, {histogram_query}")
             raise
 
-        print("complex metrics", metrics)
+        return metrics
+
+    ## Hstograms and percentiles
+
+    def scan_datetime_column(
+        self,
+        column_info: ColumnInfo,
+    ) -> List[Metric]:
+        """
+        Get histogram and percentile metrics, if this column is a numeric or datetime type.
+        """
+
+        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        data_type_simple = get_simple_data_type(data_type)
+
+        if data_type_simple != "datetime":
+            print(f"not datetime: {fq_table_name}.{column_name}: {data_type_simple}")
+            return []
+        print(f"datetime: {fq_table_name}.{column_name}: {data_type_simple}")
+        num_buckets = 10
+
+        histogram_query = f"""
+                    WITH date_range AS (
+                        SELECT
+                            MIN({column_name}) AS {column_name}_MIN,
+                            MAX({column_name}) AS {column_name}_MAX,
+                            DATEDIFF(day, {column_name}_MIN, {column_name}_MAX) AS DATE_DIFF_DAYS,
+                            DATEDIFF(hour, {column_name}_MIN, {column_name}_MAX) AS DATE_DIFF_HOURS,
+                            DATEDIFF(month, {column_name}_MIN, {column_name}_MAX) AS DATE_DIFF_MONTHS,
+                            DATEDIFF(year, {column_name}_MIN, {column_name}_MAX) AS DATE_DIFF_YEARS
+                        FROM {fq_table_name}
+                    ),
+                    bucket_config AS (
+                        SELECT
+                            dr.*,
+                            CASE
+                                -- Less than 1 day: bucket by hours (up to 24 buckets)
+                                WHEN dr.DATE_DIFF_DAYS < 1 THEN 'hour'
+                                -- Less than 31 days: bucket by days (up to 31 buckets)
+                                WHEN dr.DATE_DIFF_DAYS < 31 THEN 'day'
+                                -- Less than 1 year: bucket by months (up to 12 buckets)
+                                WHEN dr.DATE_DIFF_DAYS < 365 THEN 'month'
+                                -- Greater than 1 year: bucket by years (max 10 buckets)
+                                ELSE 'year'
+                            END AS BUCKET_UNIT,
+                            CASE
+                                WHEN dr.DATE_DIFF_DAYS < 1 THEN LEAST(dr.DATE_DIFF_HOURS, 24)
+                                WHEN dr.DATE_DIFF_DAYS < 31 THEN LEAST(dr.DATE_DIFF_DAYS, 31)
+                                WHEN dr.DATE_DIFF_DAYS < 365 THEN LEAST(dr.DATE_DIFF_MONTHS, 12)
+                                ELSE LEAST(dr.DATE_DIFF_YEARS, 10)
+                            END AS NUM_BUCKETS
+                        FROM date_range dr
+                    ),
+                    histogram_buckets AS (
+                        SELECT
+                            CASE bc.BUCKET_UNIT
+                                WHEN 'hour' THEN DATE_TRUNC('hour', {column_name})
+                                WHEN 'day' THEN DATE_TRUNC('day', {column_name})
+                                WHEN 'month' THEN DATE_TRUNC('month', {column_name})
+                                WHEN 'year' THEN
+                                    CASE
+                                        -- If more than 10 years, compress into 10 buckets
+                                        WHEN bc.DATE_DIFF_YEARS > 10 THEN
+                                            DATEADD('year',
+                                                FLOOR(DATEDIFF('year', bc.{column_name}_MIN, {column_name}) /
+                                                    CEIL(bc.DATE_DIFF_YEARS / 10.0)) *
+                                                CEIL(bc.DATE_DIFF_YEARS / 10.0),
+                                                bc.{column_name}_MIN)
+                                        ELSE DATE_TRUNC('year', {column_name})
+                                    END
+                            END AS bucket,
+                            COUNT(*) as count
+                        FROM {fq_table_name}
+                        CROSS JOIN bucket_config bc
+                        GROUP BY bucket, bc.BUCKET_UNIT, bc.DATE_DIFF_YEARS, bc.{column_name}_MIN
+                    )
+                    SELECT
+                        CURRENT_TIMESTAMP() as MEASURED_AT,
+                        OBJECT_AGG(bucket::VARCHAR, count) as NUMERIC_HISTOGRAM
+                    FROM histogram_buckets;
+                """
+        print(histogram_query)
+
+        metrics = []
+        try:
+            with self.conn.cursor(DictCursor) as cur:
+                cur.execute(histogram_query)
+                results = cur.fetchone()
+                measured_at = results["MEASURED_AT"]
+                metrics.append(
+                    Metric(
+                        run_id=self.run_id,
+                        target_table=fq_table_name,
+                        target_column=column_name,
+                        metric_name="numeric_histogram",
+                        metric_value=results["NUMERIC_HISTOGRAM"],
+                        measured_at=measured_at,
+                    )
+                )
+        except Exception as e:
+            print(f"Error running histogram query: {e}, {histogram_query}")
+            raise
+
         return metrics
 
     def scan_column(
@@ -300,9 +409,9 @@ class SnowflakeConn:
             List of Metrics for this column
         """
         (fq_table_name, column_name, data_type, is_nullable) = column_info
-        print(f"scanning {fq_table_name}.{column_name}")
 
         data_type_simple = get_simple_data_type(data_type)
+        # print(f"scanning {fq_table_name}.{column_name}: {data_type_simple}")
 
         # metric name -> metric query
         ## TODO: if table size is too large, use approx_count_distinct instead
@@ -329,13 +438,13 @@ class SnowflakeConn:
                 }
             )
 
-        elif data_type_simple == "string":
+        if data_type_simple == "string":
             query_columns.update(
                 {
                     "string_avg_length": f"AVG(LEN({column_name}))",
                 }
             )
-        elif data_type_simple == "boolean":
+        if data_type_simple == "boolean":
             query_columns.update(
                 {
                     "true_count": "COUNT_IF({column_name} = TRUE)",
@@ -352,6 +461,15 @@ class SnowflakeConn:
 
         metrics: List[Metric] = []
         # query_ids = []
+
+        print(f"scanning {fq_table_name}.{column_name}: {data_type_simple}")
+        if data_type_simple == "datetime":
+            metrics.extend(self.scan_datetime_column(column_info))
+        elif data_type_simple == "numeric":
+            metrics.extend(self.scan_numeric_column(column_info))
+        else: 
+            print ("not fancy" )
+
 
         with self.conn.cursor(DictCursor) as cur:
             cur.execute(query)
@@ -371,12 +489,6 @@ class SnowflakeConn:
                         measured_at=measured_at,
                     )
                 )
-
-        if data_type_simple == "numeric" or data_type_simple == "datetime":
-            metrics.extend(self.scan_column_complex_queries(column_info))
-            print("extended col ", column_name)
-        else:
-            print("nonnumeric col ", column_name)
 
         return metrics
         # return query_id
