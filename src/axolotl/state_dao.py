@@ -109,6 +109,13 @@ class StateDAO:
             """)
         ]
 
+    def get_latest_successful_run_id(self) -> Optional[int]:
+        return max(
+            run.run_id
+            for run in self.get_all_runs()
+            if run.successful
+        )
+
     def delete_run(self, run_id: int):
         p = self.table_prefix
         self.query(
@@ -130,7 +137,14 @@ class StateDAO:
             [metric.run_id, metric.target_table, metric.target_column, metric.metric_name, json.dumps(metric.metric_value)],
         )
 
-    def get_metrics(self, run_id: Optional[str] = None, target_table: Optional[str] = None, target_column: Optional[str] = None) -> List[Metric]:
+    def get_metrics(
+        self,
+        run_id: Optional[str] = None,
+        run_id_lte: Optional[str] = None,
+        only_successful: Optional[bool] = False,
+        target_table: Optional[str] = None,
+        target_column: Optional[str] = None,
+    ) -> List[Metric]:
         p = self.table_prefix
         where_clause = ""
         where_values = []
@@ -138,6 +152,13 @@ class StateDAO:
         if run_id is not None:
             where_clause += " AND run_id = ?"
             where_values += [run_id]
+
+        if run_id_lte is not None:
+            where_clause += " AND run_id <= ?"
+            where_values += [run_id_lte]
+
+        if only_successful:
+            where_clause += f" AND run_id in (select run_id from {p}thorntale_run where successful)"
 
         if target_table is not None:
             where_clause += " AND target_table = ?"
@@ -159,7 +180,7 @@ class StateDAO:
             for row
             in self.query(f"""
                 SELECT run_id, target_table, target_column, metric_name, metric_value, measured_at
-                FROM {p}thorntale_runs
+                FROM {p}thorntale_metric
                 WHERE 1 = 1 {where_clause}
             """, where_values)
         ]
