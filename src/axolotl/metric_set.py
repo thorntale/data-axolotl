@@ -1,24 +1,18 @@
-from typing import NamedTuple
+from typing import NamedTuple, Tuple
 from typing import List
+from typing import Set
 # from typing import override
 from enum import Enum
 import itertools
 from statistics import stdev
 
 import humanize
+from .trackers import MetricTracker, MetricAlert, MetricKey
 
 from .state_dao import Metric
 from . import derived_metrics
+from . import trackers as ts
 from .trackers import MetricKey
-from .trackers import AlertSeverity
-from .trackers import AlertMethod
-from .trackers import MetricTracker
-from .trackers import NumericMetricTracker
-from .trackers import TableSizeTracker
-from .trackers import TableRowCountTracker
-from .trackers import TableCreateTimeTracker
-from .trackers import TableUpdateTimeTracker
-from .trackers import TableStalenessTracker
 
 
 class MetricSet:
@@ -30,10 +24,6 @@ class MetricSet:
             for r in self.runs
         }
         self.metrics = metrics
-        # self.metric_keys = {
-        #     MetricKey(m.target_table, m.target_column, m.metric_name)
-        #     for m in metrics
-        # }
         # alertable metrics must have non-null values in the last 2 runs
         self.alertable_metric_keys = {
             MetricKey(m.target_table, m.target_column, m.metric_name)
@@ -41,38 +31,88 @@ class MetricSet:
             if m.run_id in sorted(r.run_id for r in runs)[-2:]
         }
 
-    def get_tracked_tables(self) -> List[str]:
+    def get_tracked_tables(self) -> Set[str]:
         return {
             k.target_table
             for k in self.alertable_metric_keys
         }
 
+    def get_tracked_columns(self) -> Set[Tuple[str, str]]:
+        return {
+            (k.target_table, k.target_column)
+            for k in self.alertable_metric_keys
+            if k.target_column is not None
+        }
+
     def get_metric_trackers_for_table(self, table: str) -> List[MetricTracker]:
-        return [
-            TableSizeTracker(
-                MetricKey(table, None, 'bytes'),
-                self._get_metric_with_nulls(MetricKey(table, None, 'bytes')),
-            ),
-            TableRowCountTracker(
-                MetricKey(table, None, 'row_count'),
-                self._get_metric_with_nulls(MetricKey(table, None, 'row_count')),
-            ),
-            TableCreateTimeTracker(
-                MetricKey(table, None, 'created_at'),
-                self._get_metric_with_nulls(MetricKey(table, None, 'created_at')),
-            ),
-            TableUpdateTimeTracker(
-                MetricKey(table, None, 'updated_at'),
-                self._get_metric_with_nulls(MetricKey(table, None, 'updated_at')),
-            ),
-            TableStalenessTracker(
-                MetricKey(table, None, 'staleness_hours'),
-                derived_metrics.staleness_hours(
-                    self._get_metric_with_nulls(MetricKey(table, None, 'updated_at')),
-                    self.run_times_by_id,
-                ),
-            ),
-        ]
+        yield ts.TableSizeTracker(
+            self._get_metric_with_nulls(MetricKey(table, None, 'bytes')),
+        )
+        yield ts.TableRowCountTracker(
+            self._get_metric_with_nulls(MetricKey(table, None, 'row_count')),
+        )
+        # yield ts.TableCreateTimeTracker(
+        #     self._get_metric_with_nulls(MetricKey(table, None, 'created_at')),
+        # )
+        # yield ts.TableUpdateTimeTracker(
+        #     self._get_metric_with_nulls(MetricKey(table, None, 'updated_at')),
+        # )
+        # yield ts.TableStalenessTracker(
+        #     derived_metrics.staleness_hours(
+        #         self._get_metric_with_nulls(MetricKey(table, None, 'updated_at')),
+        #         self.run_times_by_id,
+        #     ),
+        # )
+
+    def get_metric_trackers_for_column(self, table: str, column: str) -> List[MetricTracker]:
+        col_data_types = self._get_metric_with_nulls(MetricKey(table, column, 'data_type'))
+        col_data_type_simples = derived_metrics.data_type_simple(col_data_types)
+
+        data_type_simple = col_data_type_simples[-1].metric_value
+
+        yield ts.ColumnTypeTracker(
+            col_data_types,
+        )
+        yield ts.ColumnTypeSimpleTracker(
+            col_data_type_simples,
+        )
+        yield ts.DistinctCount(
+            self._get_metric_with_nulls(MetricKey(table, column, 'distinct_count'))
+        )
+        yield ts.DistinctRate(
+            self._get_metric_with_nulls(MetricKey(table, column, 'distinct_rate'))
+        )
+
+        if data_type_simple == 'boolean':
+            pass # TODO
+        if data_type_simple == 'numeric':
+            pass # TODO
+        if data_type_simple == 'string':
+            pass # TODO
+        if data_type_simple == 'datetime':
+            pass # TODO
+        if data_type_simple == 'structured':
+            pass # TODO
+        if data_type_simple == 'unstructured':
+            pass # TODO
+        if data_type_simple == 'vector':
+            pass # TODO
+        if data_type_simple == 'other':
+            pass # TODO
+
+    def get_all_alerts(self) -> List[MetricAlert]:
+        trackers = []
+
+        for t in self.get_tracked_tables():
+            trackers += self.get_metric_trackers_for_table(t)
+
+        for t, c in self.get_tracked_columns():
+            trackers += self.get_metric_trackers_for_column(t, c)
+
+        return list(filter(
+            lambda v: v is not None,
+            (t.get_alert() for t in trackers),
+        ))
 
     def _get_metric_with_nulls(self, key: MetricKey, type_constrained: bool = False) -> List[Metric]:
         """
