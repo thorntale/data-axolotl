@@ -37,11 +37,13 @@ class MetricSet:
             for k in self.alertable_metric_keys
         }
 
-    def get_tracked_columns(self) -> Set[Tuple[str, str]]:
+    def get_tracked_columns(self, table: Optional[str] = None) -> Set[Tuple[str, str]]:
         return {
             (k.target_table, k.target_column)
             for k in self.alertable_metric_keys
-            if k.target_column is not None
+            if
+                k.target_column is not None
+                and (table is None or table == k.target_table)
         }
 
     def get_metric_trackers_for_table(self, table: str) -> List[MetricTracker]:
@@ -79,21 +81,54 @@ class MetricSet:
         yield ts.ColumnTypeSimpleTracker(
             col_data_type_simples,
         )
+
         yield ts.DistinctCount(
             self._get_metric_with_nulls(MetricKey(table, column, 'distinct_count'))
         )
         yield ts.DistinctRate(
             self._get_metric_with_nulls(MetricKey(table, column, 'distinct_rate'))
         )
+        yield ts.NullCount(
+            self._get_metric_with_nulls(MetricKey(table, column, 'null_count'))
+        )
+        yield ts.NullRate(
+            self._get_metric_with_nulls(MetricKey(table, column, 'null_pct'))
+        )
 
         if data_type_simple == 'boolean':
             pass # TODO
+
         if data_type_simple == 'numeric':
-            pass # TODO
+            yield ts.Min(
+                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_min'))
+            )
+            yield ts.Max(
+                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_max'))
+            )
+            yield ts.Mean(
+                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_mean'))
+            )
+            yield ts.Stddev(
+                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_stddev'))
+            )
+            # TODO: numeric_histogram
+            # TODO: numeric_percentiles
+
         if data_type_simple == 'string':
-            pass # TODO
+            yield ts.AvgStringLength(
+                self._get_metric_with_nulls(MetricKey(table, column, 'string_avg_length'))
+            )
+
         if data_type_simple == 'datetime':
-            pass # TODO
+            yield ts.MinTS(
+                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_max'))
+            )
+            yield ts.MaxTS(
+                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_min'))
+            )
+            # TODO: numeric_histogram
+            # TODO: numeric_percentiles
+
         if data_type_simple == 'structured':
             pass # TODO
         if data_type_simple == 'unstructured':

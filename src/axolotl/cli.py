@@ -127,10 +127,10 @@ def report(
         raise typer.Exit(code=1)
 
     runs = state.get_all_runs()
-    if not run_id in [r.run_id for r in runs]:
+    if run_id not in [r.run_id for r in runs]:
         print(f"Run {run_id} does not exist.")
         raise typer.Exit(code=1)
-    if not run_id in [r.run_id for r in runs if r.successful]:
+    if run_id not in [r.run_id for r in runs if r.successful]:
         print(f"Run {run_id} was not successful.")
         raise typer.Exit(code=1)
 

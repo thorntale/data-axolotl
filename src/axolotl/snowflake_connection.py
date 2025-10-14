@@ -283,8 +283,8 @@ class SnowflakeConn:
                     )
                 )
         except Exception as e:
-            print(f"Error running histogram query: {e}, {histogram_query}")
-            raise
+            print(f"Error running histogram query (numeric): {e}, {histogram_query}")
+            # raise
 
         return metrics
 
@@ -389,8 +389,8 @@ class SnowflakeConn:
                     )
                 )
         except Exception as e:
-            print(f"Error running histogram query: {e}, {histogram_query}")
-            raise
+            print(f"Error running histogram query (datetime): {e}, {histogram_query}")
+            # raise
 
         return metrics
 
@@ -424,7 +424,7 @@ class SnowflakeConn:
             "row_count": "COUNT(*)",
             "null_count": f"COUNT_IF({col_sql} IS NULL)",
             "null_pct": f'100.0 * "null_count" / "row_count"',
-            "distinct_count": f'COUNT(DISTINCT({col_sql}))',
+            "distinct_count": f'COUNT(DISTINCT {col_sql})',
             "distinct_rate": f'100.0 * "distinct_count" / ("row_count" - "null_count")',
         }
 
@@ -433,8 +433,14 @@ class SnowflakeConn:
                 {
                     "numeric_min": f"MIN({col_sql})",
                     "numeric_max": f"MAX({col_sql})",
+                }
+            )
+
+        if data_type_simple == "numeric":
+            query_columns.update(
+                {
                     "numeric_mean": f"AVG({col_sql})",
-                    "numeric_mean": f"VARIANCE({col_sql})",
+                    "numeric_stddev": f"STDDEV({col_sql})",
                 }
             )
 
@@ -444,6 +450,7 @@ class SnowflakeConn:
                     "string_avg_length": f"AVG(LEN({col_sql}))",
                 }
             )
+
         if data_type_simple == "boolean":
             query_columns.update(
                 {
