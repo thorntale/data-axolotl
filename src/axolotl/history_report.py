@@ -1,8 +1,11 @@
+import re
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 from rich.padding import Padding
 import asciichartpy
+
+from .display_utils import pretty_table_name
 
 
 class HistoryReport:
@@ -37,8 +40,13 @@ class HistoryReport:
                             value, suffix = v / 1e3, "k"
 
                         # try decreasing precision until it fits
-                        for p in range(3, -1, -1):
-                            s = f"{value:.{p}f}{suffix}"
+                        for p in [3, 2, 1, 0]:
+                            s = re.sub(
+                                r"\.0+$",
+                                "",
+                                str(round(value, p)),
+                            ) + suffix
+                            # s = f"{value:.{p}f}{suffix}"
                             if len(s) <= 5:
                                 return '    ' + s.rjust(5)
                         return '    ' + f"{round(value)}{suffix}".rjust(5)
@@ -51,7 +59,7 @@ class HistoryReport:
 
     def _print_table_header(self, table: str):
         self.console.print(Panel.fit(
-            f"[bold blue]{escape(table.split('.')[-1].title())}[/bold blue] - Table Metrics\n"
+            f"[bold blue]{escape(pretty_table_name(table))}[/bold blue] - Table Metrics\n"
             f"[blue]{escape(table)}[/blue]",
         ))
 

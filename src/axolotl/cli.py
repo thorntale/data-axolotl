@@ -11,6 +11,7 @@ from .state_connection import (
 from .state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
+from .alert_report import AlertReport
 
 app = typer.Typer()
 
@@ -152,8 +153,7 @@ def report(
     metric_set = MetricSet(filtered_runs, metrics)
 
     if alerts:
-        # TODO: generate alerting report
-        print('TODO: alerting report')
+        AlertReport(metric_set).print()
 
     if history:
         HistoryReport(metric_set).print()

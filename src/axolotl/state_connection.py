@@ -158,70 +158,87 @@ class SnowflakeConn:
             List of Metrics for this column
         """
         data_type_simple = get_simple_data_type(data_type)
+
+        # use c."column_name" form to avoid conflicts with outputs
+        col_sql = f'c."{column_name}"'
+
         # metric name -> metric query
         query_columns = {
-            "distinct_rate": f"100.0 * COUNT(DISTINCT({column_name})) / COUNT(*)",
+            "data_type": f"'{data_type}'",
+            "row_count": "COUNT(*)",
+            "null_count": f"COUNT_IF({col_sql} IS NULL)",
+            "null_pct": f'100.0 * "null_count" / "row_count"',
         }
-
-        if is_nullable == "YES":
-            query_columns.update(
-                {
-                    "null_count": f"COUNT_IF({column_name} IS NULL)",
-                    "null_pct": f"100.0 * COUNT_IF({column_name} IS NOT NULL) / COUNT(*)",
-                }
-            )
 
         if data_type_simple == "numeric":
             query_columns.update(
                 {
-                    "numeric_min": f"MIN({column_name})",
-                    "numeric_max": f"MAX({column_name})",
-                    "numeric_mean": f"AVG({column_name})",
-                    "numeric_mean": f"VARIANCE({column_name})",
+                    "numeric_min": f"MIN({col_sql})",
+                    "numeric_max": f"MAX({col_sql})",
+                    "numeric_mean": f"AVG({col_sql})",
+                    "numeric_mean": f"VARIANCE({col_sql})",
                 }
             )
             ## TODO: percentiles and histograms
         elif data_type_simple == "string":
             query_columns.update(
                 {
-                    "string_avg_length": f"AVG(LEN({column_name}))",
+                    "string_avg_length": f"AVG(LEN({col_sql}))",
                 }
             )
         elif data_type_simple == "boolean":
             query_columns.update(
                 {
-                    "true_count": "COUNT_IF({column_name} = TRUE)",
-                    "false_count": "COUNT_IF({column_name} = FALSE)",
+                    "true_count": f"COUNT_IF({col_sql} = TRUE)",
+                    "false_count": f"COUNT_IF({col_sql} = FALSE)",
                 }
             )
         ## TODO: Stats for the other types
 
-        query = f"""
-            SELECT CURRENT_TIMESTAMP() as MEASURED_AT,
-            {",\n".join([f"{metric_query} AS {metric_name}" for (metric_name, metric_query) in query_columns.items()])} 
-            FROM {fq_table_name}
-        """
+        def run(query: str) -> Dict[str, Any]:
+            with self.conn.cursor(DictCursor) as cur:
+                try:
+                    cur.execute(query)
+                    return cur.fetchone()
+                except:
+                    print(query)
+                    raise
 
-        metrics: List[Metric] = []
+        results = run(f"""
+            SELECT CURRENT_TIMESTAMP() as "_measured_at",
+                {",\n".join(
+                    f'{metric_query} AS "{metric_name}"'
+                    for metric_name, metric_query
+                    in query_columns.items()
+                )}
+            FROM {fq_table_name} as c
+        """)
 
-        with self.conn.cursor(DictCursor) as cur:
-            cur.execute(query)
-            results = cur.fetchone()
-            measured_at = results["MEASURED_AT"]  # snowflake uppercases column names.
+        # Stage 2
+        non_null_count = results['row_count'] - results['null_count']
+        results.update(run(f"""
+            SELECT CURRENT_TIMESTAMP() as "_measured_at",
+                {
+                    f'COUNT(DISTINCT {col_sql})'
+                    if non_null_count <= 1e7 else
+                    f'APPROX_COUNT_DISTINCT({col_sql})'
+                } as "distinct_count",
+                100.0 * "distinct_count" / {non_null_count} as "distinct_rate"
+            FROM {fq_table_name} as c
+        """))
 
-            for metric_name in query_columns:
-                metrics.append(
-                    Metric(
-                        run_id=run_id,
-                        target_table=fq_table_name,
-                        target_column=column_name,
-                        metric_name=metric_name,
-                        metric_value=results[metric_name.upper()],
-                        measured_at=measured_at,
-                    )
-                )
-
-        return metrics
+        return [
+            Metric(
+                run_id=run_id,
+                target_table=fq_table_name,
+                target_column=column_name,
+                metric_name=metric_name,
+                metric_value=metric_value,
+                measured_at=results["_measured_at"],
+            )
+            for metric_name, metric_value in results.items()
+            if not metric_name.startswith("_")
+        ]
 
     def snapshot_table(self, run_id: str, table_name: str) -> List[Metric]:
         """
@@ -282,12 +299,12 @@ class SnowflakeConn:
                 cur.execute(
                     f"""
                     SELECT
-                        TABLE_CATALOG, 
-                        TABLE_SCHEMA, 
-                        TABLE_NAME, 
-                        ROW_COUNT, 
-                        BYTES, 
-                        LAST_ALTERED, 
+                        TABLE_CATALOG,
+                        TABLE_SCHEMA,
+                        TABLE_NAME,
+                        ROW_COUNT,
+                        BYTES,
+                        LAST_ALTERED,
                         CURRENT_TIMESTAMP() as measured_at
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_CATALOG = '{self.database}'
