@@ -467,9 +467,6 @@ class SnowflakeConn:
             metrics.extend(self.scan_datetime_column(column_info))
         elif data_type_simple == "numeric":
             metrics.extend(self.scan_numeric_column(column_info))
-        else: 
-            print ("not fancy" )
-
 
         with self.conn.cursor(DictCursor) as cur:
             cur.execute(query)
