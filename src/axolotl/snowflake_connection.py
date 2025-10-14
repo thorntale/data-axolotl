@@ -370,7 +370,7 @@ class SnowflakeConn:
                         OBJECT_AGG(bucket, count) as NUMERIC_HISTOGRAM
                     FROM formatted_buckets;
                 """
-        print(histogram_query)
+        # print(histogram_query)
 
         metrics = []
         try:
@@ -552,25 +552,26 @@ class SnowflakeConn:
                 - List of table names found in the schema
         """
         metrics = []
-        table_names = []  ## fully qualified table names
+        table_names = []
+        fq_table_names = []
+        g_measured_at = None
 
         with self.conn.cursor() as cur:
             try:
-                cur.execute(
-                    f"""
+                cur.execute(f"""
                     SELECT
                         TABLE_CATALOG,
                         TABLE_SCHEMA,
                         TABLE_NAME,
                         ROW_COUNT,
                         BYTES,
+                        CREATED,
                         LAST_ALTERED,
                         CURRENT_TIMESTAMP() as measured_at
-                FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_CATALOG = '{self.database}'
-                AND TABLE_SCHEMA = '{self.table_schema}';
-                    """
-                )
+                    FROM INFORMATION_SCHEMA.TABLES
+                    WHERE TABLE_CATALOG = '{self.database}'
+                    AND TABLE_SCHEMA = '{self.table_schema}';
+                """)
 
             except Exception as e:
                 print(f"Error running table: {e}")
@@ -582,35 +583,73 @@ class SnowflakeConn:
                 table_name,
                 row_count,
                 table_bytes,
+                created,
                 last_altered,
                 measured_at,
             ) in cur:
+                g_measured_at = measured_at
                 table_names.append(table_name)
                 fq_table_name = f"{table_catalog}.{table_schema}.{table_name}"
+                fq_table_names.append(fq_table_name)
 
-                try:
-                    metrics.extend(
-                        [
-                            Metric(
-                                run_id=self.run_id,
-                                target_table=fq_table_name,
-                                target_column=None,
-                                metric_name="row_count",
-                                metric_value=row_count,
-                                measured_at=measured_at,
-                            ),
-                            Metric(
-                                run_id=self.run_id,
-                                target_table=fq_table_name,
-                                target_column=None,
-                                metric_name="bytes",
-                                metric_value=table_bytes,
-                                measured_at=measured_at,
-                            ),
-                        ]
-                    )
-                except Exception as e:
-                    print(f"Error: {e}")
-                    raise
+                metrics += [
+                    Metric(
+                        run_id=self.run_id,
+                        target_table=fq_table_name,
+                        target_column=None,
+                        metric_name="row_count",
+                        metric_value=row_count,
+                        measured_at=measured_at,
+                    ),
+                    Metric(
+                        run_id=self.run_id,
+                        target_table=fq_table_name,
+                        target_column=None,
+                        metric_name="bytes",
+                        metric_value=table_bytes,
+                        measured_at=measured_at,
+                    ),
+                    Metric(
+                        run_id=self.run_id,
+                        target_table=fq_table_name,
+                        target_column=None,
+                        metric_name="created_at",
+                        metric_value=created,
+                        measured_at=measured_at,
+                    ),
+                    Metric(
+                        run_id=self.run_id,
+                        target_table=fq_table_name,
+                        target_column=None,
+                        metric_name="altered_at",
+                        metric_value=last_altered,
+                        measured_at=measured_at,
+                    ),
+                ]
+
+        with self.conn.cursor() as cur:
+            try:
+                cur.execute(f"""
+                    select {','.join(
+                        f"TO_TIMESTAMP_TZ(SYSTEM$LAST_CHANGE_COMMIT_TIME('{table_name}') / 1e9)"
+                        for table_name in fq_table_names
+                    )}
+                """)
+                results = cur.fetchone()
+            except Exception as e:
+                print(f"Error getting table update times: {e}")
+                raise
+
+            metrics += [
+                Metric(
+                    run_id=self.run_id,
+                    target_table=table_name,
+                    target_column=None,
+                    metric_name="updated_at",
+                    metric_value=col,
+                    measured_at=measured_at,
+                )
+                for col, table_name in zip(results, fq_table_names)
+            ]
 
         return metrics, table_names

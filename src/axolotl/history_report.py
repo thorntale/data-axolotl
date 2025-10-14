@@ -24,37 +24,13 @@ class HistoryReport:
                     ),
                     (0, 2),
                 ))
-                values = [v.metric_value or float("nan") for v in tracker.values]
-                class LabelFormatter:
-                    def format(self, v):
-                        suffix = ""
-                        value = v
+                if all(
+                    v.metric_value is None
+                    or isinstance(v.metric_value, (int, float))
+                    for v in tracker.values
+                ):
+                    self._print_numeric_chart(tracker)
 
-                        if abs(v) >= 1e12:
-                            value, suffix = v / 1e12, "T"
-                        elif abs(v) >= 1e9:
-                            value, suffix = v / 1e9, "B"
-                        elif abs(v) >= 1e6:
-                            value, suffix = v / 1e6, "M"
-                        elif abs(v) >= 1e3:
-                            value, suffix = v / 1e3, "k"
-
-                        # try decreasing precision until it fits
-                        for p in [3, 2, 1, 0]:
-                            s = re.sub(
-                                r"\.0+$",
-                                "",
-                                str(round(value, p)),
-                            ) + suffix
-                            # s = f"{value:.{p}f}{suffix}"
-                            if len(s) <= 5:
-                                return '    ' + s.rjust(5)
-                        return '    ' + f"{round(value)}{suffix}".rjust(5)
-
-                print(asciichartpy.plot(values, {
-                    'height': 10,
-                    'format': LabelFormatter(),
-                }))
                 # self.console.print(tracker.get_current_value())
 
     def _print_table_header(self, table: str):
@@ -62,6 +38,39 @@ class HistoryReport:
             f"[bold blue]{escape(pretty_table_name(table))}[/bold blue] - Table Metrics\n"
             f"[blue]{escape(table)}[/blue]",
         ))
+
+    def _print_numeric_chart(self, tracker: MetricTracker):
+        values = [v.metric_value or float("nan") for v in tracker.values]
+        class LabelFormatter:
+            def format(self, v):
+                suffix = ""
+                value = v
+
+                if abs(v) >= 1e12:
+                    value, suffix = v / 1e12, "T"
+                elif abs(v) >= 1e9:
+                    value, suffix = v / 1e9, "B"
+                elif abs(v) >= 1e6:
+                    value, suffix = v / 1e6, "M"
+                elif abs(v) >= 1e3:
+                    value, suffix = v / 1e3, "k"
+
+                # try decreasing precision until it fits
+                for p in [3, 2, 1, 0]:
+                    s = re.sub(
+                        r"\.0+$",
+                        "",
+                        str(round(value, p)),
+                    ) + suffix
+                    # s = f"{value:.{p}f}{suffix}"
+                    if len(s) <= 5:
+                        return '    ' + s.rjust(5)
+                return '    ' + f"{round(value)}{suffix}".rjust(5)
+
+        print(asciichartpy.plot(values, {
+            'height': 10,
+            'format': LabelFormatter(),
+        }))
 
 
 def intersperse(arr, sep):

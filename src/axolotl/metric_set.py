@@ -51,18 +51,21 @@ class MetricSet:
         yield ts.TableRowCountTracker(
             self._get_metric_with_nulls(MetricKey(table, None, 'row_count')),
         )
-        # yield ts.TableCreateTimeTracker(
-        #     self._get_metric_with_nulls(MetricKey(table, None, 'created_at')),
-        # )
-        # yield ts.TableUpdateTimeTracker(
-        #     self._get_metric_with_nulls(MetricKey(table, None, 'updated_at')),
-        # )
-        # yield ts.TableStalenessTracker(
-        #     derived_metrics.staleness_hours(
-        #         self._get_metric_with_nulls(MetricKey(table, None, 'updated_at')),
-        #         self.run_times_by_id,
-        #     ),
-        # )
+        yield ts.TableCreateTimeTracker(
+            self._get_metric_with_nulls(MetricKey(table, None, 'created_at')),
+        )
+        yield ts.TableAlterTimeTracker(
+            self._get_metric_with_nulls(MetricKey(table, None, 'altered_at')),
+        )
+        yield ts.TableUpdateTimeTracker(
+            self._get_metric_with_nulls(MetricKey(table, None, 'updated_at')),
+        )
+        yield ts.TableStalenessTracker(
+            derived_metrics.staleness_hours(
+                self._get_metric_with_nulls(MetricKey(table, None, 'updated_at')),
+                self.run_times_by_id,
+            ),
+        )
 
     def get_metric_trackers_for_column(self, table: str, column: str) -> List[MetricTracker]:
         col_data_types = self._get_metric_with_nulls(MetricKey(table, column, 'data_type'))

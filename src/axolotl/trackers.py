@@ -96,7 +96,7 @@ class MetricTracker(ABC):
         if value is None:
             return 'null'
         if isinstance(value, datetime):
-            return value.strftime("%d-%m-%Y %H:%M:%S %Z")
+            return value.strftime("%Y-%m-%d %H:%M:%S %Z")
         if isinstance(value, (int, float)):
             return f"{value:,}"
         return str(value)
@@ -259,7 +259,11 @@ class TableRowCountTracker(NumericMetricTracker):
 
 class TableCreateTimeTracker(EqualityMetricTracker):
     pretty_name = "Creation Time"
-    description = "Time the table was last created"
+    description = "Time the table was last created."
+
+class TableAlterTimeTracker(EqualityMetricTracker):
+    pretty_name = "Last Altered Time"
+    description = "Time the table structure was last altered."
 
 class TableUpdateTimeTracker(MetricTracker):
     pretty_name = "Update Time"

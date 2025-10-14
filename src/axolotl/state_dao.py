@@ -57,10 +57,19 @@ class StateDAO:
                 target_column TEXT DEFAULT NULL,
                 metric_name TEXT NOT NULL,
                 metric_value TEXT,
+                value_is_datetime INTEGER NOT NULL DEFAULT 0,
                 measured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (run_id, target_table, target_column, metric_name)
             );
         """)
+
+        try:
+            self.query(f"""
+                ALTER TABLE {p}thorntale_metric ADD COLUMN value_is_datetime INTEGER NOT NULL DEFAULT 0;
+            """)
+        except:
+            # if the table was already updated this will fail, which is fine
+            pass
 
     @contextmanager
     def make_run(self):
@@ -70,6 +79,7 @@ class StateDAO:
             self._end_run(run_id, True)
         except:
             self._end_run(run_id, False)
+            print('Run failed!!!')
 
     def _make_new_run(self) -> int:
         """ returns the run id """
@@ -129,12 +139,33 @@ class StateDAO:
 
     def record_metric(self, metric: Metric):
         p = self.table_prefix
+        serialized_value = (
+            metric.metric_value.isoformat()
+            if isinstance(metric.metric_value, datetime) else
+            json.dumps(metric.metric_value)
+        )
         self.query(
             f"""
-                INSERT INTO {p}thorntale_metric (run_id, target_table, target_column, metric_name, metric_value)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO {p}thorntale_metric (
+                    run_id,
+                    target_table,
+                    target_column,
+                    metric_name,
+                    metric_value,
+                    value_is_datetime,
+                    measured_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            [metric.run_id, metric.target_table, metric.target_column, metric.metric_name, json.dumps(metric.metric_value)],
+            [
+                metric.run_id,
+                metric.target_table,
+                metric.target_column,
+                metric.metric_name,
+                serialized_value,
+                1 if isinstance(metric.metric_value, datetime) else 0,
+                metric.measured_at,
+            ],
         )
 
     def get_metrics(
@@ -168,18 +199,23 @@ class StateDAO:
             where_clause += " AND target_column = ?"
             where_values += [target_column]
 
+        def ensure_tz(dt):
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt
+
         return [
             Metric(
                 row[0],
                 row[1],
                 row[2],
                 row[3],
-                json.loads(row[4]),
-                datetime.fromisoformat(row[5]),
+                ensure_tz(datetime.fromisoformat(row[4])) if row[5] else json.loads(row[4]),
+                ensure_tz(datetime.fromisoformat(row[6])),
             )
             for row
             in self.query(f"""
-                SELECT run_id, target_table, target_column, metric_name, metric_value, measured_at
+                SELECT run_id, target_table, target_column, metric_name, metric_value, value_is_datetime, measured_at
                 FROM {p}thorntale_metric
                 WHERE 1 = 1 {where_clause}
             """, where_values)
