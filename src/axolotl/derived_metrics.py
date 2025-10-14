@@ -4,7 +4,7 @@ from datetime import datetime
 from datetime import timedelta
 
 from .state_dao import Metric
-from .state_connection import get_simple_data_type
+from .snowflake_connection import get_simple_data_type
 
 
 

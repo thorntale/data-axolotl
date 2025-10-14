@@ -5,6 +5,8 @@ import typer
 from tabulate import tabulate
 from .state_connection import (
     get_conn,
+)
+from .snowflake_connection import (
     SnowflakeConn,
     SnowflakeOptions,
 )
@@ -41,30 +43,18 @@ def run(
         warehouse=warehouse,
         table_schema=table_schema,
     )
-    snowflake_conn = SnowflakeConn(options)
-
 
     with state.make_run() as run_id:
         typer.echo(f"Running {run_id}...")
-        #metrics = snowflake_conn.get_table_level_metrics(run_id)
-        try:
-            metrics = snowflake_conn.snapshot(run_id)
-        except Exception as e:
-            print(f"Error: {e}")
-            raise
+        snowflake_conn = SnowflakeConn(options, run_id)
 
-        for m in metrics:
-            try:
-                state.record_metric(m)
-            except Exception as e:
-                print(f"Error recording metric: {e}")
-                raise
-
-        #print(metrics)
-        #scan_database(snowflake_conn, options, state, run_id)
-
-        # TODO: Implement run logic
-
+        for metric_list in snowflake_conn.snapshot(run_id):
+            for m in metric_list:
+                try:
+                    state.record_metric(m)
+                except Exception as e:
+                    print(f"Error recording metric: {e}")
+                    raise
 
 @app.command()
 def list():
@@ -76,23 +66,26 @@ def list():
 
     runs = sorted(state.get_all_runs(), key=lambda r: r.run_id)
 
-    print(tabulate(
-        [
+    print(
+        tabulate(
             [
-                run.run_id,
-                run.started_at and run.started_at.strftime("%d-%m-%Y %H:%M:%S %Z"),
-                run.finished_at and run.finished_at.strftime("%d-%m-%Y %H:%M:%S %Z"),
-                run.successful,
-            ]
-            for run in runs
-        ],
-        headers=[
-            "id",
-            "Started At",
-            "Finished At",
-            "Successful",
-        ],
-    ))
+                [
+                    run.run_id,
+                    run.started_at and run.started_at.strftime("%d-%m-%Y %H:%M:%S %Z"),
+                    run.finished_at
+                    and run.finished_at.strftime("%d-%m-%Y %H:%M:%S %Z"),
+                    run.successful,
+                ]
+                for run in runs
+            ],
+            headers=[
+                "id",
+                "Started At",
+                "Finished At",
+                "Successful",
+            ],
+        )
+    )
 
 
 @app.command()
