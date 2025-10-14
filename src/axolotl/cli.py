@@ -13,6 +13,7 @@ from .snowflake_connection import (
 from .state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
+from .alert_report import AlertReport
 
 app = typer.Typer()
 
@@ -54,8 +55,6 @@ def run(
                 except Exception as e:
                     print(f"Error recording metric: {e}")
                     raise
-
-
 
 @app.command()
 def list():
@@ -147,8 +146,7 @@ def report(
     metric_set = MetricSet(filtered_runs, metrics)
 
     if alerts:
-        # TODO: generate alerting report
-        print('TODO: alerting report')
+        AlertReport(metric_set).print()
 
     if history:
         HistoryReport(metric_set).print()

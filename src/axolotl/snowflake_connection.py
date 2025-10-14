@@ -304,8 +304,6 @@ class SnowflakeConn:
         if data_type_simple != "datetime":
             print(f"not datetime: {fq_table_name}.{column_name}: {data_type_simple}")
             return []
-        print(f"datetime: {fq_table_name}.{column_name}: {data_type_simple}")
-        num_buckets = 10
 
         histogram_query = f"""
                     WITH date_range AS (
@@ -322,13 +320,9 @@ class SnowflakeConn:
                         SELECT
                             dr.*,
                             CASE
-                                -- Less than 1 day: bucket by hours (up to 24 buckets)
                                 WHEN dr.DATE_DIFF_DAYS < 1 THEN 'hour'
-                                -- Less than 31 days: bucket by days (up to 31 buckets)
-                                WHEN dr.DATE_DIFF_DAYS < 31 THEN 'day'
-                                -- Less than 1 year: bucket by months (up to 12 buckets)
-                                WHEN dr.DATE_DIFF_DAYS < 365 THEN 'month'
-                                -- Greater than 1 year: bucket by years (max 10 buckets)
+                                WHEN dr.DATE_DIFF_MONTHS < 1 THEN 'day'
+                                WHEN dr.DATE_DIFF_YEARS < 1 THEN 'month'
                                 ELSE 'year'
                             END AS BUCKET_UNIT,
                             CASE
@@ -350,22 +344,31 @@ class SnowflakeConn:
                                         -- If more than 10 years, compress into 10 buckets
                                         WHEN bc.DATE_DIFF_YEARS > 10 THEN
                                             DATEADD('year',
-                                                FLOOR(DATEDIFF('year', bc.{column_name}_MIN, {column_name}) /
-                                                    CEIL(bc.DATE_DIFF_YEARS / 10.0)) *
-                                                CEIL(bc.DATE_DIFF_YEARS / 10.0),
-                                                bc.{column_name}_MIN)
+                                                FLOOR(DATEDIFF('year', bc.{column_name}_MIN, {column_name}) / CEIL(bc.DATE_DIFF_YEARS / 10.0)) * CEIL(bc.DATE_DIFF_YEARS / 10.0), bc.{column_name}_MIN)
                                         ELSE DATE_TRUNC('year', {column_name})
                                     END
-                            END AS bucket,
+                            END AS bucket_timestamp,
+                            bc.BUCKET_UNIT,
                             COUNT(*) as count
                         FROM {fq_table_name}
                         CROSS JOIN bucket_config bc
-                        GROUP BY bucket, bc.BUCKET_UNIT, bc.DATE_DIFF_YEARS, bc.{column_name}_MIN
+                        GROUP BY bucket_timestamp, bc.BUCKET_UNIT, bc.DATE_DIFF_YEARS, bc.{column_name}_MIN
+                    ),
+                    formatted_buckets AS (
+                        SELECT
+                            CASE BUCKET_UNIT
+                                WHEN 'hour' THEN TO_CHAR(bucket_timestamp, 'YYYY-MM-DD:HH24')
+                                WHEN 'day' THEN TO_CHAR(bucket_timestamp, 'YYYY-MM-DD')
+                                WHEN 'month' THEN TO_CHAR(bucket_timestamp, 'YYYY-MM')
+                                WHEN 'year' THEN TO_CHAR(bucket_timestamp, 'YYYY')
+                            END AS bucket,
+                            count
+                        FROM histogram_buckets
                     )
                     SELECT
                         CURRENT_TIMESTAMP() as MEASURED_AT,
-                        OBJECT_AGG(bucket::VARCHAR, count) as NUMERIC_HISTOGRAM
-                    FROM histogram_buckets;
+                        OBJECT_AGG(bucket, count) as NUMERIC_HISTOGRAM
+                    FROM formatted_buckets;
                 """
         print(histogram_query)
 
@@ -411,52 +414,53 @@ class SnowflakeConn:
         (fq_table_name, column_name, data_type, is_nullable) = column_info
 
         data_type_simple = get_simple_data_type(data_type)
-        # print(f"scanning {fq_table_name}.{column_name}: {data_type_simple}")
+
+        # use c."column_name" form to avoid conflicts with outputs
+        col_sql = f'c."{column_name}"'
 
         # metric name -> metric query
-        ## TODO: if table size is too large, use approx_count_distinct instead
-
         query_columns = {
-            "distinct_rate": f"100.0 * COUNT(DISTINCT({column_name})) / COUNT(*)",
+            "data_type": f"'{data_type}'",
+            "row_count": "COUNT(*)",
+            "null_count": f"COUNT_IF({col_sql} IS NULL)",
+            "null_pct": f'100.0 * "null_count" / "row_count"',
+            "distinct_count": f'COUNT(DISTINCT({col_sql}))',
+            "distinct_rate": f'100.0 * "distinct_count" / ("row_count" - "null_count")',
         }
-
-        if is_nullable == "YES":
-            query_columns.update(
-                {
-                    "null_count": f"COUNT_IF({column_name} IS NULL)",
-                    "null_pct": f"100.0 * COUNT_IF({column_name} IS NOT NULL) / COUNT(*)",
-                }
-            )
 
         if data_type_simple == "numeric" or data_type_simple == "datetime":
             query_columns.update(
                 {
-                    "numeric_min": f"MIN({column_name})",
-                    "numeric_max": f"MAX({column_name})",
-                    "numeric_mean": f"AVG({column_name})",
-                    "numeric_mean": f"VARIANCE({column_name})",
+                    "numeric_min": f"MIN({col_sql})",
+                    "numeric_max": f"MAX({col_sql})",
+                    "numeric_mean": f"AVG({col_sql})",
+                    "numeric_mean": f"VARIANCE({col_sql})",
                 }
             )
 
         if data_type_simple == "string":
             query_columns.update(
                 {
-                    "string_avg_length": f"AVG(LEN({column_name}))",
+                    "string_avg_length": f"AVG(LEN({col_sql}))",
                 }
             )
         if data_type_simple == "boolean":
             query_columns.update(
                 {
-                    "true_count": "COUNT_IF({column_name} = TRUE)",
-                    "false_count": "COUNT_IF({column_name} = FALSE)",
+                    "true_count": f"COUNT_IF({col_sql} = TRUE)",
+                    "false_count": f"COUNT_IF({col_sql} = FALSE)",
                 }
             )
         ## TODO: Stats for the other types
 
         query = f"""
-            SELECT CURRENT_TIMESTAMP() as MEASURED_AT,
-            {",\n".join([f"{metric_query} AS {metric_name}" for (metric_name, metric_query) in query_columns.items()])} 
-            FROM {fq_table_name}
+            SELECT CURRENT_TIMESTAMP() as "_measured_at",
+                {",\n".join(
+                    f'{metric_query} AS "{metric_name}"'
+                    for metric_name, metric_query
+                    in query_columns.items()
+                )}
+            FROM {fq_table_name} as c
         """
 
         metrics: List[Metric] = []
@@ -469,21 +473,28 @@ class SnowflakeConn:
             metrics.extend(self.scan_numeric_column(column_info))
 
         with self.conn.cursor(DictCursor) as cur:
-            cur.execute(query)
-            # return cur.query_id
+            try:
+                cur.execute(query)
+                # return cur.query_id
 
-            # query_ids.append(cur.sfqid)
-            results = cur.fetchone()
-            measured_at = results["MEASURED_AT"]  # snowflake uppercases column names.
-            for metric_name in query_columns:
+                # query_ids.append(cur.sfqid)
+                results = cur.fetchone()
+            except Exception as e:
+                print(e)
+                print(query)
+                raise e
+
+            for metric_name, metric_value in results.items():
+                if metric_name.startswith("_"):
+                    continue
                 metrics.append(
                     Metric(
                         run_id=self.run_id,
                         target_table=fq_table_name,
                         target_column=column_name,
                         metric_name=metric_name,
-                        metric_value=results[metric_name.upper()],
-                        measured_at=measured_at,
+                        metric_value=metric_value,
+                        measured_at=results["_measured_at"],
                     )
                 )
 
@@ -548,12 +559,12 @@ class SnowflakeConn:
                 cur.execute(
                     f"""
                     SELECT
-                        TABLE_CATALOG, 
-                        TABLE_SCHEMA, 
-                        TABLE_NAME, 
-                        ROW_COUNT, 
-                        BYTES, 
-                        LAST_ALTERED, 
+                        TABLE_CATALOG,
+                        TABLE_SCHEMA,
+                        TABLE_NAME,
+                        ROW_COUNT,
+                        BYTES,
+                        LAST_ALTERED,
                         CURRENT_TIMESTAMP() as measured_at
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_CATALOG = '{self.database}'

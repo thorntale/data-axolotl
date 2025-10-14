@@ -5,6 +5,9 @@ from typing import Any
 from enum import Enum
 from abc import ABC, abstractmethod
 from datetime import datetime
+import itertools
+from statistics import stdev
+
 import humanize
 
 from .state_dao import Metric
@@ -40,6 +43,17 @@ class AlertMethod(Enum):
     # (prev is None) != (current is None)
     ToFromNull = 'ToFromNull'
 
+# The display value describing the alert change, ex `+10%` or `5.6std`
+type AlertingDelta = str
+
+class MetricAlert(NamedTuple):
+    key: MetricKey
+    pretty_name: str
+    alert_severity: AlertSeverity
+    alert_method: AlertMethod
+    current_value_formatted: str
+    prev_value_formatted: str
+    change_formatted: str
 
 class MetricTracker(ABC):
     pretty_name: str = "<pretty_name>"
@@ -48,13 +62,31 @@ class MetricTracker(ABC):
     key: MetricKey
     values: List[Metric]
 
-    def __init__(self, key: MetricKey, values: List[Metric]):
-        self.key = key
+    def __init__(self, values: List[Metric]):
+        if not values:
+            raise ValueError('No values provided to MetricTracker')
+        self.key = MetricKey(
+            values[0].target_table,
+            values[0].target_column,
+            values[0].metric_name,
+        )
         self.values = values
 
     @abstractmethod
-    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod]:
+    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
         pass
+
+    def get_alert(self) -> MetricAlert:
+        severity, method, change_formatted = self.get_change_severity()
+        return MetricAlert(
+            key=self.key,
+            pretty_name=self.pretty_name,
+            alert_severity=severity,
+            alert_method=method,
+            current_value_formatted=self.value_formatter(self.get_current_value()),
+            prev_value_formatted=self.value_formatter(self.get_prev_value()),
+            change_formatted=change_formatted,
+        )
 
     def value_formatter(self, value: Any) -> str:
         if value == True:
@@ -117,6 +149,9 @@ class MetricTracker(ABC):
         if len(latest_30) < MIN_DELTA_ESTIMATION_COUNT:
             return None
 
+        def avg(v):
+            return sum(v) / len(v)
+
         return abs(latest - avg(latest_30)) / stdev(latest_30)
 
     def estimate_delta_pct(self) -> Optional[float]:
@@ -151,29 +186,58 @@ class MetricTracker(ABC):
 class NumericMetricTracker(MetricTracker):
     """ General purpose metric tracker for numeric metrics.
     Comes with a get_change_severity implementation """
-    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod]:
+    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
         if self.is_null_status_change():
-            return (AlertSeverity.Major, AlertMethod.ToFromNull)
+            return (AlertSeverity.Major, AlertMethod.ToFromNull, '!=')
         z_score = self.estimate_delta_z_score()
         if z_score is not None:
             if z_score > 4:
-                return (AlertSeverity.Major, AlertMethod.ZScore)
+                return (AlertSeverity.Major, AlertMethod.ZScore, f"{z_score:.1f}z")
             if z_score > 3:
-                return (AlertSeverity.Minor, AlertMethod.ZScore)
+                return (AlertSeverity.Minor, AlertMethod.ZScore, f"{z_score:.1f}z")
             if z_score > 0.0:
-                return (AlertSeverity.Other, AlertMethod.ZScore)
-            return (AlertSeverity.Unchanged, AlertMethod.ZScore)
+                return (AlertSeverity.Other, AlertMethod.ZScore, f"{z_score:.1f}z")
+            return (AlertSeverity.Unchanged, AlertMethod.ZScore, f"{z_score:.1f}z")
         dpct = self.estimate_delta_pct()
         if dpct is not None:
             if abs(dpct) > 0.2:
-                return (AlertSeverity.Major, AlertMethod.Pct)
+                return (AlertSeverity.Major, AlertMethod.Pct, f"{dpct:+.0f}%")
             if abs(dpct) > 0.05:
-                return (AlertSeverity.Minor, AlertMethod.Pct)
+                return (AlertSeverity.Minor, AlertMethod.Pct, f"{dpct:+.0f}%")
             if abs(dpct) > 0.0:
-                return (AlertSeverity.Other, AlertMethod.Pct)
-            return (AlertSeverity.Unchanged, AlertMethod.Pct)
+                return (AlertSeverity.Other, AlertMethod.Pct, f"{dpct:+.0f}%")
+            return (AlertSeverity.Unchanged, AlertMethod.Pct, f"{dpct:+.0f}%")
         # probably unreachable
-        return (AlertSeverity.Major, AlertMethod.Changed)
+        return (AlertSeverity.Major, AlertMethod.Changed, '!=')
+
+class PercentMetricTracker(NumericMetricTracker):
+    """ Numeric metric tracker for relative values.
+    Computes delta changes non-relatively. """
+    def estimate_delta_pct(self) -> Optional[float]:
+        """
+        Computes current - prev
+        - if prev or current is None, returns None
+        """
+        cur = self.get_current_value()
+        prev = self.get_prev_value()
+        if cur is None or prev is None:
+            return None
+        return cur - prev
+
+    def value_formatter(self, value: Any) -> str:
+        if isinstance(value, (int, float)):
+            return f"{value:,.2f}%"
+        return super().value_formatter(value)
+
+
+class EqualityMetricTracker(MetricTracker):
+    """ Alerts if the metric changes at all """
+    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
+        if self.is_null_status_change():
+            return (AlertSeverity.Major, AlertMethod.ToFromNull, '!=')
+        if self.get_current_value() != self.get_prev_value():
+            return (AlertSeverity.Minor, AlertMethod.Changed, '!=')
+        return (AlertSeverity.Unchanged, AlertMethod.Changed, '==')
 
 
 class TableSizeTracker(NumericMetricTracker):
@@ -193,23 +257,17 @@ class TableRowCountTracker(NumericMetricTracker):
     pass
 
 
-class TableCreateTimeTracker(NumericMetricTracker):
+class TableCreateTimeTracker(EqualityMetricTracker):
     pretty_name = "Creation Time"
     description = "Time the table was last created"
-    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod]:
-        if self.is_null_status_change():
-            return (AlertSeverity.Major, AlertMethod.ToFromNull)
-        if self.get_current_value() != self.get_prev_value():
-            return (AlertSeverity.Minor, AlertMethod.Changed)
-        return (AlertSeverity.Unchanged, AlertMethod.Changed)
 
 class TableUpdateTimeTracker(MetricTracker):
     pretty_name = "Update Time"
     description = "Time the table was last updated"
-    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod]:
+    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
         if self.get_current_value() != self.get_prev_value():
-            return (AlertSeverity.Other, AlertMethod.Changed)
-        return (AlertSeverity.Unchanged, AlertMethod.Changed)
+            return (AlertSeverity.Other, AlertMethod.Changed, '!=')
+        return (AlertSeverity.Unchanged, AlertMethod.Changed, '==')
 
 class TableStalenessTracker(NumericMetricTracker):
     pretty_name = "Staleness"
@@ -218,3 +276,20 @@ class TableStalenessTracker(NumericMetricTracker):
         if value is None:
             return super().value_formatter(value)
         return super().value_formatter(value) + ' hours'
+
+
+class ColumnTypeTracker(EqualityMetricTracker):
+    pretty_name = 'Column Type'
+    description = 'The type of the column'
+
+class ColumnTypeSimpleTracker(EqualityMetricTracker):
+    pretty_name = 'Simple Type'
+    description = 'The type category of the column'
+
+class DistinctCount(NumericMetricTracker):
+    pretty_name = 'Distinct Count'
+    description = 'Count of distinct non-null values. May be approximate for large tables.'
+
+class DistinctRate(PercentMetricTracker):
+    pretty_name = 'Distinct Rate'
+    description = 'Distinct count / non-null row count.'
