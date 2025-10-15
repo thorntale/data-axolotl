@@ -1,5 +1,5 @@
 import snowflake.connector
-from typing import NamedTuple, List, Tuple
+from typing import NamedTuple, List, Tuple, TypedDict, NotRequired
 from snowflake.connector import DictCursor
 from .state_dao import Metric
 from collections.abc import Iterator
@@ -14,13 +14,33 @@ class ColumnInfo(NamedTuple):
     is_nullable: str
 
 
-class SnowflakeOptions(NamedTuple):
+class SnowflakeOptions(TypedDict):
+    # Required fields
     user: str
-    password: str
     account: str
     database: str
     warehouse: str
-    table_schema: str
+    schema: str
+
+    # Password authentication (mutually exclusive with private key auth)
+    password: NotRequired[str]
+
+    # Private key authentication (mutually exclusive with password)
+    private_key: NotRequired[bytes]
+    private_key_path: NotRequired[str]
+    private_key_passphrase: NotRequired[str]
+
+    # Optional additional fields that can be passed to snowflake.connector.connect()
+    role: NotRequired[str]
+    schema: NotRequired[str]
+    authenticator: NotRequired[str]
+    session_parameters: NotRequired[dict]
+    timezone: NotRequired[str]
+    autocommit: NotRequired[bool]
+    client_session_keep_alive: NotRequired[bool]
+    validate_default_parameters: NotRequired[bool]
+    paramstyle: NotRequired[str]
+    application: NotRequired[str]
 
 
 SNOWFLAKE_NUMERIC_TYPES = [
@@ -100,16 +120,23 @@ def get_simple_data_type(data_type: str) -> str:
 
 class SnowflakeConn:
     """
-    Wraps a Snowflake conn in order to take a snapshot of one database and table_schema.
+    Wraps a Snowflake conn in order to take a snapshot of one database and schema.
     """
 
     def __init__(self, options: SnowflakeOptions, run_id: int):
-        self.conn = snowflake.connector.connect(
-            **options._asdict(),
-        )
-        self.database = options.database
-        self.table_schema = options.table_schema
+        self.database = options["database"]
+        ## note that we rename schema to table_schema here
+        self.table_schema = options["schema"]
         self.run_id = run_id
+
+        try: 
+            self.conn = snowflake.connector.connect(**options)
+        except Exception as e:
+            print(e)
+
+            ## FIXME: don't print passwords here
+            print(f"Failed to create snowflake connection: {options}")
+            raise e
 
     def snapshot(self, batch_size=10) -> Iterator[List[Metric]]:
         """
@@ -250,7 +277,6 @@ class SnowflakeConn:
                     "false_count": f"COUNT_IF({col_sql} = FALSE)",
                 }
             )
-
         return self._query_metrics(query_columns, column_info)
 
     def scan_numeric_column(self, column_info: ColumnInfo) -> List[Metric]:

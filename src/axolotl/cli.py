@@ -14,35 +14,39 @@ from .state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
 from .alert_report import AlertReport
+from .config import load_config
 
 app = typer.Typer()
 
 
 @app.command()
 def run(
-    account: Annotated[str, typer.Option(prompt=True)],
-    user: Annotated[str, typer.Option(prompt=True)],
-    password: Annotated[str, typer.Option(prompt=True)],
-    database: Annotated[str, typer.Option(prompt=True)],
-    warehouse: Annotated[str, typer.Option(prompt=True)],
-    table_schema: Annotated[str, typer.Option(prompt=True)],
+    config_path: Annotated[str, typer.Option(prompt=True)],
+    #account: Annotated[str, typer.Option(prompt=True)],
+    #user: Annotated[str, typer.Option(prompt=True)],
+    #password: Annotated[str, typer.Option(prompt=True)],
+    #database: Annotated[str, typer.Option(prompt=True)],
+    #warehouse: Annotated[str, typer.Option(prompt=True)],
+    #table_schema: Annotated[str, typer.Option(prompt=True)],
 ):
     """
-    Execute a new run.
+    Execute a new run. Takes a --config path/to/config.toml 
     """
 
     typer.echo("Running...")
     state_conn = get_conn()
     state = StateDAO(state_conn)
 
-    options = SnowflakeOptions(
-        account=account,
-        user=user,
-        password=password,
-        database=database,
-        warehouse=warehouse,
-        table_schema=table_schema,
-    )
+    config = load_config(config_path)
+
+
+    options: SnowflakeOptions
+
+    for (name, opt) in config.connections.items(): 
+        print(name, opt )
+        options= opt ## FIXME for testing
+    print(options)
+
 
     with state.make_run() as run_id:
         typer.echo(f"Running {run_id}...")
