@@ -44,6 +44,10 @@ class AlertMethod(Enum):
     # (prev is None) != (current is None)
     ToFromNull = 'ToFromNull'
 
+class ChartMode(Enum):
+    Standard = 'Standard'
+    NumericPercentiles = 'NumericPercentiles'
+
 # The display value describing the alert change, ex `+10%` or `5.6std`
 type AlertingDelta = str
 
@@ -59,6 +63,7 @@ class MetricAlert(NamedTuple):
 class MetricTracker(ABC):
     pretty_name: str = "<pretty_name>"
     description: str = "<description>"
+    chart_mode = ChartMode.Standard
 
     key: MetricKey
     values: List[Metric]
@@ -226,15 +231,6 @@ class NumericMetricTracker(MetricTracker):
             return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
         if z_alert := self.get_delta_z_alert():
             return z_alert
-        # z_score = self.estimate_delta_z_score()
-        # if z_score is not None:
-        #     if z_score > 4:
-        #         return (AlertSeverity.Major, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
-        #     if z_score > 3:
-        #         return (AlertSeverity.Minor, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
-        #     if z_score == 0 and self.get_prev_value() == self.get_current_value():
-        #         return (AlertSeverity.Unchanged, AlertMethod.ZScore, f"==,Δ=0z")
-        #     return (AlertSeverity.Other, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
         dpct = self.estimate_delta_pct()
         if dpct is not None:
             if abs(dpct) > 0.2:
@@ -253,15 +249,7 @@ class DatetimeMetricTracker(MetricTracker):
             return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
         if z_alert := self.get_delta_z_alert():
             return z_alert
-        # z_score = self.estimate_delta_z_score()
-        # if z_score is not None:
-        #     if z_score > 4:
-        #         return (AlertSeverity.Major, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
-        #     if z_score > 3:
-        #         return (AlertSeverity.Minor, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
-        #     if z_score == 0 and self.get_prev_value() == self.get_current_value():
-        #         return (AlertSeverity.Unchanged, AlertMethod.ZScore, f"==,Δ=0z")
-        #     return (AlertSeverity.Other, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
+        # don't even bother trying to do % changes on datetimes
         if self.get_current_value() != self.get_prev_value():
             return (AlertSeverity.Minor, AlertMethod.Changed, '!=')
         return (AlertSeverity.Unchanged, AlertMethod.Changed, '==')
@@ -394,3 +382,12 @@ class AvgStringLength(NumericMetricTracker):
 class Stddev(NumericMetricTracker):
     pretty_name = 'Standard Deviation'
     description = 'Standard deviation amoung non-null values'
+
+class NumericPercentiles(NumericMetricTracker):
+    pretty_name = 'Percentile Measurements'
+    description = 'Approximate percentile measurements'
+    chart_mode = ChartMode.NumericPercentiles
+
+    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
+        # TODO
+        return (AlertSeverity.Other, AlertMethod.Pct, 'TODO')

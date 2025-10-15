@@ -111,6 +111,9 @@ class MetricSet:
             yield ts.Stddev(
                 self._get_metric_with_nulls(MetricKey(table, column, 'numeric_stddev'))
             )
+            yield ts.NumericPercentiles(
+                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_percentiles'))
+            )
             # TODO: numeric_histogram
             # TODO: numeric_percentiles
 
