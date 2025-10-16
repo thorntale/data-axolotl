@@ -48,6 +48,7 @@ class AlertMethod(Enum):
 
 class ChartMode(Enum):
     Standard = 'Standard'
+    HasChanged = 'HasChanged'
     NumericPercentiles = 'NumericPercentiles'
     NumericHistogram = 'NumericHistogram'
 
@@ -130,7 +131,7 @@ class MetricTracker(ABC):
             return None
         return deltas[-1]
 
-    def get_all_detlas(self) -> List[float]:
+    def get_all_detlas(self) -> List[float|None]:
         """ Returns a list of all delta, in order, for numeric types """
         return [
             self.get_single_delta(a, b)
@@ -314,14 +315,17 @@ class TableRowCountTracker(NumericMetricTracker):
 class TableCreateTimeTracker(EqualityMetricTracker):
     pretty_name = "Creation Time"
     description = "Time the table was last created."
+    chart_mode = ChartMode.HasChanged
 
 class TableAlterTimeTracker(EqualityMetricTracker):
     pretty_name = "Last Altered Time"
     description = "Time the table structure was last altered."
+    chart_mode = ChartMode.HasChanged
 
 class TableUpdateTimeTracker(MetricTracker):
     pretty_name = "Update Time"
     description = "Time the table was last updated"
+    chart_mode = ChartMode.HasChanged
     def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
         if self.get_current_value() != self.get_prev_value():
             return (AlertSeverity.Changed, AlertMethod.Changed, '!=')
@@ -386,8 +390,8 @@ class Mean(NumericMetricTracker):
     description = 'Average non-null value'
 
 class AvgStringLength(NumericMetricTracker):
-    pretty_name = 'Average String Length'
-    description = 'Average string length'
+    pretty_name = 'Average Length'
+    description = 'Average length of string'
 
 class Stddev(NumericMetricTracker):
     pretty_name = 'Standard Deviation'

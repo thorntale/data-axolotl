@@ -1,5 +1,5 @@
 import snowflake.connector
-from typing import NamedTuple, List, Tuple, TypedDict, NotRequired
+from typing import NamedTuple, List, Tuple, TypedDict, NotRequired, Dict, Any
 from snowflake.connector import DictCursor
 from .state_dao import Metric
 from collections.abc import Iterator
@@ -24,7 +24,6 @@ class SnowflakeOptions(TypedDict):
     account: str
     database: str
     warehouse: str
-    schema: str
 
     # Password authentication (mutually exclusive with private key auth)
     password: NotRequired[str]
@@ -208,7 +207,7 @@ class SnowflakeConn:
         }
 
     def _package_metrics(
-        self, column_info: ColumnInfo, query_results: dict[str, any]
+        self, column_info: ColumnInfo, query_results: Dict[str, Any]
     ) -> List[Metric]:
         """
         Takes the output of _query_values and packages them into metrics list
@@ -237,7 +236,7 @@ class SnowflakeConn:
 
     def _query_values(
         self, query_columns: dict[str, str], column_info: ColumnInfo
-    ) -> dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Use this instead of _query_metrics when you need to do something else to
         the results before packaging them.
@@ -247,7 +246,7 @@ class SnowflakeConn:
         """
 
         (fq_table_name, column_name, data_type, is_nullable) = column_info
-        res: dict[str, any] = {}
+        res: Dict[str, Any] = {}
 
         query = f"""
             SELECT CURRENT_TIMESTAMP() as "_measured_at",
@@ -266,6 +265,8 @@ class SnowflakeConn:
 
                 # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
+                if not results:
+                    raise ValueError('No results found')
 
             except Exception as e:
                 print(e)
@@ -309,6 +310,7 @@ class SnowflakeConn:
 
                 # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
+                assert results is not None
             except Exception as e:
                 print(e)
                 print(query)
@@ -341,7 +343,7 @@ class SnowflakeConn:
         data_type_simple = get_simple_data_type(data_type)
 
         if data_type_simple != "string" and data_type_simple != "boolean":
-            raise f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean"
+            raise TypeError(f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean")
 
         col_sql = f'c."{column_name}"'
         query_columns = self._common_queries(column_info)
@@ -426,6 +428,7 @@ class SnowflakeConn:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute(percentile_query)
                 results = cur.fetchone()
+                assert results is not None
                 measured_at = results["MEASURED_AT"]
                 metrics.append(
                     Metric(
@@ -485,6 +488,7 @@ class SnowflakeConn:
                 with self.conn.cursor(DictCursor) as cur:
                     cur.execute(histogram_query)
                     results = cur.fetchone()
+                    assert results is not None
                     measured_at = results["MEASURED_AT"]
                     metrics.append(
                         Metric(
@@ -603,6 +607,7 @@ class SnowflakeConn:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute(histogram_query)
                 results = cur.fetchone()
+                assert results is not None
                 measured_at = results["MEASURED_AT"]
                 metrics.append(
                     Metric(
@@ -791,6 +796,7 @@ class SnowflakeConn:
                 """
                 )
                 results = cur.fetchone()
+                assert results is not None
             except Exception as e:
                 print(f"Error getting table update times: {e}")
                 raise e

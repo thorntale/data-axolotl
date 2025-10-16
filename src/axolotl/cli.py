@@ -99,7 +99,7 @@ def rm_run(id: int):
 
 @app.command()
 def report(
-    target: Annotated[Optional[str], typer.Argument(
+    target: Annotated[str, typer.Argument(
         help="""
             Generate a report for only matching objects. Supports: db, db.schema, db.schema.table, db.schema.table.column
         """

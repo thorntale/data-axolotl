@@ -1,4 +1,4 @@
-from typing import Set, Optional, NamedTuple, Tuple, List
+from typing import Set, Optional, NamedTuple, Tuple, List, Generator
 # from typing import override
 from enum import Enum
 import itertools
@@ -44,7 +44,7 @@ class MetricSet:
                 and (table is None or table == k.target_table)
         }
 
-    def get_metric_trackers_for_table(self, table: str) -> List[MetricTracker]:
+    def get_metric_trackers_for_table(self, table: str) -> Generator[MetricTracker]:
         # We might list a table because there are column metrics within it, but
         # not track any table metrics. In that case, skip its metrics.
         if not any(
@@ -75,7 +75,7 @@ class MetricSet:
             ),
         )
 
-    def get_metric_trackers_for_column(self, table: str, column: str) -> List[MetricTracker]:
+    def get_metric_trackers_for_column(self, table: str, column: str) -> Generator[MetricTracker]:
         col_data_types = self._get_metric_with_nulls(MetricKey(table, column, 'data_type'))
         col_data_type_simples = derived_metrics.data_type_simple(col_data_types)
 
@@ -149,7 +149,7 @@ class MetricSet:
             pass # TODO
 
     def get_all_alerts(self) -> List[MetricAlert]:
-        trackers = []
+        trackers: List[MetricTracker] = []
 
         for t in self.get_tracked_tables():
             trackers += self.get_metric_trackers_for_table(t)
