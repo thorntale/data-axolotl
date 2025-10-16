@@ -387,7 +387,7 @@ class SnowflakeConn:
                 "numeric_min": f"MIN({col_sql})",
                 "numeric_max": f"MAX({col_sql})",
                 "numeric_mean": f"AVG({col_sql})",
-                "numeric_variance": f"VARIANCE({col_sql})",
+                "numeric_stddev": f"STDDEV({col_sql})",
             }
         )
 
