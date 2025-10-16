@@ -5,11 +5,12 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 from rich.padding import Padding
-import asciichartpy
+from rich.text import Text
 
 from .display_utils import pretty_table_name
 from .trackers import MetricTracker
 from .trackers import ChartMode
+from .line_chart import Chart
 
 
 class HistoryReport:
@@ -60,12 +61,21 @@ class HistoryReport:
             self._print_percentile_chart(tracker)
 
     def _print_numeric_chart(self, tracker: MetricTracker):
-        values = [v.metric_value or float("nan") for v in tracker.values]
-
-        print(asciichartpy.plot(values, {
-            'height': 10,
-            'format': ChartLabelFormatter(),
-        }))
+        chart = Chart(
+            # left_axis_title=tracker.pretty_name,
+            # right_axis_title='Δ',
+            # include_zero_right=True,
+        )
+        # chart.add_plot(
+        #     [None] + tracker.get_all_detlas(),
+        #     side='right',
+        #     color='\033[0;34m',
+        # )
+        chart.add_plot(
+            [v.metric_value for v in tracker.values],
+            label_end=True,
+        )
+        self.console.print(Padding(Text.from_ansi(chart.render()), (0, 4)), highlight=False)
 
     def _normalize_percentile_value(self, pcts: Optional[Dict[str, Any]]) -> Optional[Dict[int, Any]]:
         if not pcts:
@@ -82,28 +92,40 @@ class HistoryReport:
         ]
         # order matters here; later plots are drawn on top
         plot_keys_and_colors = {
-            50: asciichartpy.green,
-            10: asciichartpy.yellow,
-            90: asciichartpy.cyan,
-            # 5: asciichartpy.white,
-            # 95: asciichartpy.white,
-            0: asciichartpy.red,
-            100: asciichartpy.blue,
+            50: '\033[0;32m',
+            10: "\033[1;33m",
+            90: "\033[0;36m",
+            0: "\033[0;31m",
+            100: "\033[0;34m",
         }
-        plots = [
-            [
-                val[p] if val else float('nan')
-                for val
-                in vals_over_time
-            ]
-            for p in plot_keys_and_colors.keys()
+        chart = Chart(
+            # left_axis_title=tracker.pretty_name,
+        )
+        for key, color in plot_keys_and_colors.items():
+            chart.add_plot(
+                [
+                    val[key] if val else None
+                    for val in vals_over_time
+                ],
+                color=color,
+                label_end=f"{key}p",
+            )
+        self.console.print(Padding(Text.from_ansi(chart.render()), (0, 4)), highlight=False)
+        # self._print_percentile_histogram(tracker)
+        # self._print_percentile_curve(tracker)
+
+    def _print_percentile_curve(self, tracker: MetricTracker):
+        val = self._normalize_percentile_value(tracker.get_current_value())
+        if not val:
+            return
+        xs = range(0, 101, 2)
+        ys = [
+            max(((k, v) for k, v in val.items() if k <= pct), key=lambda t: t[0])[1]
+            for pct in xs
         ]
-        print(asciichartpy.plot(plots, {
-            'height': 10,
-            'format': ChartLabelFormatter(),
-            'colors': list(plot_keys_and_colors.values())
-            # 'format': LabelFormatter(),
-        }))
+        chart = Chart()
+        chart.add_plot(ys)
+        self.console.print(Padding(Text.from_ansi(chart.render()), (0, 4)), highlight=False)
         # self._print_percentile_histogram(tracker)
 
     def _print_percentile_histogram(self, tracker: MetricTracker):

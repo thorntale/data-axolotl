@@ -7,11 +7,13 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from datetime import timedelta
 import itertools
+import math
 from statistics import stdev
 
 import humanize
 
 from .state_dao import Metric
+from .line_chart import arr_to_dots
 
 
 """ Number of data points required to use delta trend estimation """
@@ -30,7 +32,7 @@ class AlertSeverity(Enum):
     Major = 'Major'
     # Minor is for changes that could be systemic
     Minor = 'Minor'
-    Other = 'Other'
+    Changed = 'Changed'
     Unchanged = 'Unchanged'
 
 class AlertMethod(Enum):
@@ -129,20 +131,21 @@ class MetricTracker(ABC):
 
     def get_all_detlas(self) -> List[float]:
         """ Returns a list of all delta, in order, for numeric types """
-        def diff(a, b):
-            try:
-                diff = b - a
-                if isinstance(diff, timedelta):
-                    return diff.total_seconds()
-                else:
-                    return diff
-            except TypeError:
-                return None
         return [
-            diff(a, b)
+            self.get_single_delta(a, b)
             for (a, b)
             in itertools.pairwise(v.metric_value for v in self.values)
         ]
+
+    def get_single_delta(self, a, b) -> float | None:
+        try:
+            diff = b - a
+            if isinstance(diff, timedelta):
+                return diff.total_seconds()
+            else:
+                return diff
+        except TypeError:
+            return None
 
     def estimate_delta_z_score(self) -> Optional[float]:
         """ Computes the mean and stddev of latest 30 deltas, then compares
@@ -192,7 +195,7 @@ class MetricTracker(ABC):
             return (AlertSeverity.Unchanged, AlertMethod.ZScore, f"==,Δ=0z")
         # if z is 0 but the metric did change, put the alert in other
         # ex: a metric increases by +1 every run
-        return (AlertSeverity.Other, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
+        return (AlertSeverity.Changed, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
 
     def estimate_delta_pct(self) -> Optional[float]:
         """
@@ -238,7 +241,7 @@ class NumericMetricTracker(MetricTracker):
             if abs(dpct) > 0.05:
                 return (AlertSeverity.Minor, AlertMethod.Pct, f"{dpct:+.0f}%")
             if abs(dpct) > 0.0:
-                return (AlertSeverity.Other, AlertMethod.Pct, f"{dpct:+.0f}%")
+                return (AlertSeverity.Changed, AlertMethod.Pct, f"{dpct:+.0f}%")
             return (AlertSeverity.Unchanged, AlertMethod.Pct, f"{dpct:+.0f}%")
         # probably unreachable
         return (AlertSeverity.Major, AlertMethod.Changed, '!=')
@@ -314,7 +317,7 @@ class TableUpdateTimeTracker(MetricTracker):
     description = "Time the table was last updated"
     def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
         if self.get_current_value() != self.get_prev_value():
-            return (AlertSeverity.Other, AlertMethod.Changed, '!=')
+            return (AlertSeverity.Changed, AlertMethod.Changed, '!=')
         return (AlertSeverity.Unchanged, AlertMethod.Changed, '==')
 
 class TableStalenessTracker(NumericMetricTracker):
@@ -384,10 +387,83 @@ class Stddev(NumericMetricTracker):
     description = 'Standard deviation amoung non-null values'
 
 class NumericPercentiles(NumericMetricTracker):
-    pretty_name = 'Percentile Measurements'
+    pretty_name = 'Percentiles'
     description = 'Approximate percentile measurements'
     chart_mode = ChartMode.NumericPercentiles
 
-    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
-        # TODO
-        return (AlertSeverity.Other, AlertMethod.Pct, 'TODO')
+    def value_formatter(self, value: Any) -> str:
+        if value is None:
+            return super().value_formatter(value)
+        # """ TODO: this is probably more suited to histograms; maybe
+        # a [┄─━═=#=═━─┄] plot would be better here? """
+        # bottom = min(value.values())
+        # top = max(value.values())
+        # sorted_keys = sorted(value.keys(), key=lambda k: int(k[0:-1]))
+        # ys = [
+        #     math.floor(value[k] / ((top - bottom) or 1) * 5)
+        #     for k in sorted_keys
+        # ]
+        # return '⎹' + arr_to_dots([0] + ys) + '⎸'
+
+        L = 10
+        chars = ' -=░▓░=- '
+        part_widths = [
+            value['1p'] - value['0p'],
+            value['5p'] - value['1p'],
+            value['10p'] - value['5p'],
+            value['30p'] - value['10p'],
+            value['70p'] - value['30p'],
+            value['90p'] - value['70p'],
+            value['95p'] - value['90p'],
+            value['99p'] - value['95p'],
+            value['100p'] - value['99p'],
+        ]
+        if sum(part_widths) == 0:
+            return '[' + '░' * L + ']'
+        return (
+            '['
+            + ''.join(
+                char * round(w / sum(part_widths) * L * 9)
+                for char, w in zip(chars, part_widths)
+            )[4::9]  # we render at 9x resolution then downscale to mitigate rounding errors
+            + ']'
+        )
+
+
+    def get_single_delta(self, a, b) -> float | None:
+        """ Returns average change in percentile across all measured percentiles """
+        if a is None or b is None:
+            return None
+
+        diffs = [
+            b[k] - a[k]
+            for k in set(a.keys()) & set(b.keys())
+        ]
+        if not diffs:
+            return None
+        return sum(diffs) / len(diffs)
+
+    def estimate_delta_pct(self) -> Optional[float]:
+        """
+        Computes (current - prev) / prev
+        Handles some special cases:
+        - if prev or current is None, returns None
+        - if prev == current == 0, returns 0
+        - if prev == 0, returns ±Infinity
+        - if prev or current is non-numeric, returns None
+        """
+        cur = self.get_current_value()
+        prev = self.get_prev_value()
+        delta = self.get_single_delta(prev, cur)
+        if delta is None:
+            return None
+        if delta == 0:
+            return 0
+        span = prev['100p'] - prev['0p']
+        if not span:
+            return None
+        return delta / span
+
+    # def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
+    #     # TODO
+    #     return (AlertSeverity.Changed, AlertMethod.Pct, 'TODO')

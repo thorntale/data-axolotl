@@ -1,4 +1,5 @@
 from collections import defaultdict
+import sys
 
 from rich.console import Console
 from rich.panel import Panel
@@ -35,7 +36,7 @@ class AlertReport:
                 for alert in alerts
             )
             self.console.print(Panel.fit(
-                f"[bold red]{severity.value}[/bold red] [bright_black]({num_alerts} alerts)",
+                f"[bold red]{severity.value}[/bold red] [bright_black]({num_alerts} columns)",
                 border_style="red",
             ))
             if not num_alerts:
@@ -48,7 +49,7 @@ class AlertReport:
                 ))
                 for alert in alerts_by_column[None]:
                     self.console.print(Padding(
-                        self._format_alert(alert),
+                        self._format_alert(alert, '  '),
                         (0, 4),
                     ), highlight=False)
 
@@ -68,13 +69,19 @@ class AlertReport:
                         ), highlight=False)
                 self.console.print()
 
-    def _format_alert(self, alert: MetricAlert) -> str:
+    def _format_alert(self, alert: MetricAlert, extra_spacing='') -> str:
         name = alert.pretty_name + ':'
+        DIFF_SIZE = 15
         return (
             "- "
-            + escape(f"{name:<25s} ")
-            + f"[bright_black]{escape(alert.prev_value_formatted)} → [/bright_black]"
-            + f"[magenta]{escape(alert.current_value_formatted)}[/magenta]"
-            + (' ' * (30 - len(alert.prev_value_formatted + alert.current_value_formatted)))
+            + escape(f"{name:<20s} ")
+            + extra_spacing
+            + f"[bright_black]{escape(alert.prev_value_formatted.rjust(DIFF_SIZE))} → [/bright_black]"
+            + f"[magenta]{escape(alert.current_value_formatted.ljust(DIFF_SIZE))}[/magenta]"
+            + (' ' * (
+                DIFF_SIZE * 2 + 3
+                - max(DIFF_SIZE, len(alert.prev_value_formatted))
+                - max(DIFF_SIZE, len(alert.current_value_formatted))
+            ))
             + f" ({escape(alert.change_formatted)})"
         )
