@@ -1,4 +1,4 @@
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 from typing import List
 from typing import Literal
 from datetime import date

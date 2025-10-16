@@ -12,6 +12,7 @@ from .trackers import MetricTracker
 from .trackers import ChartMode
 from .line_chart import Chart
 
+from typing import Dict, Optional,Any
 
 rainbow_colors = [
     "\033[0;31m",

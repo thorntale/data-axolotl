@@ -91,7 +91,7 @@ def _parse_snowflake_connection(
 
     # Validate authentication method
     has_password = "password" in conn_config
-    has_private_key = "private_key_path" in conn_config or "private_key" in conn_config
+    has_private_key = "private_key_file" in conn_config or "private_key" in conn_config
 
     if not has_password and not has_private_key:
         raise ValueError(
