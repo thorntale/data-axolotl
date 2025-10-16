@@ -1,0 +1,26 @@
+
+[metrics]
+[metrics.myconnection]
+max_threads = 10
+query_timeout_seconds = 60
+
+[metrics.testingconnection]
+max_threads = 2
+query_timeout_seconds = 60
+
+
+[connections]
+[connections.sasquatch]
+type = "snowflake"
+
+## If the type is snowflake, this matches snowflake's connection.toml entires
+account = "IGQTQKI-QK48619"
+user = "fred_the_sasquatch_ro"
+## $ENVVAR is the syntax to get from environment variable
+password = "$SASQUATCH_PASSWORD"
+warehouse = "COMPUTE_WH"
+database = "SNOWFLAKE_SAMPLE_DATA"
+
+## TODO: make this optional
+schema = "TPCH_SF10"
+

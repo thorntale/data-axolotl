@@ -6,6 +6,7 @@ from rich.padding import Padding
 import asciichartpy
 
 from .display_utils import pretty_table_name
+from .trackers import MetricTracker
 
 
 class HistoryReport:

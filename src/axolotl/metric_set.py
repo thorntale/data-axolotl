@@ -1,6 +1,4 @@
-from typing import NamedTuple, Tuple
-from typing import List
-from typing import Set
+from typing import Set, Optional, NamedTuple, Tuple, List
 # from typing import override
 from enum import Enum
 import itertools

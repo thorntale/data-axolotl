@@ -14,47 +14,38 @@ from .state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
 from .alert_report import AlertReport
+from .config import load_config
 
 app = typer.Typer()
 
 
 @app.command()
 def run(
-    account: Annotated[str, typer.Option(prompt=True)],
-    user: Annotated[str, typer.Option(prompt=True)],
-    password: Annotated[str, typer.Option(prompt=True)],
-    database: Annotated[str, typer.Option(prompt=True)],
-    warehouse: Annotated[str, typer.Option(prompt=True)],
-    table_schema: Annotated[str, typer.Option(prompt=True)],
+    config_path: Annotated[str, typer.Option(prompt=True)],
 ):
     """
-    Execute a new run.
+    Execute a new run. Takes a --config path/to/config.toml
     """
 
     typer.echo("Running...")
     state_conn = get_conn()
     state = StateDAO(state_conn)
 
-    options = SnowflakeOptions(
-        account=account,
-        user=user,
-        password=password,
-        database=database,
-        warehouse=warehouse,
-        table_schema=table_schema,
-    )
+    config = load_config(config_path)
 
     with state.make_run() as run_id:
         typer.echo(f"Running {run_id}...")
-        snowflake_conn = SnowflakeConn(options, run_id)
 
-        for metric_list in snowflake_conn.snapshot():
-            for m in metric_list:
-                try:
-                    state.record_metric(m)
-                except Exception as e:
-                    print(f"Error recording metric: {e}")
-                    raise
+        for name, options in config.connections.items():
+            with SnowflakeConn(options, run_id) as snowflake_conn:
+                for metric_list in snowflake_conn.snapshot():
+                    for m in metric_list:
+                        try:
+                            state.record_metric(m)
+                        except Exception as e:
+                            print(f"Error recording metric: {e}")
+                            raise
+
 
 @app.command()
 def list():
@@ -108,7 +99,12 @@ def rm_run(id: int):
 
 @app.command()
 def report(
-    run_id: Annotated[Optional[int], typer.Option(help="The run id to make a report on. Defaults to latest successful run.")] = None,
+    run_id: Annotated[
+        Optional[int],
+        typer.Option(
+            help="The run id to make a report on. Defaults to latest successful run."
+        ),
+    ] = None,
     alerts: Annotated[bool, typer.Option(help="Include the alerting report")] = True,
     history: Annotated[bool, typer.Option(help="Include the history report")] = True,
 ):
@@ -123,7 +119,7 @@ def report(
 
     run_id = run_id or state.get_latest_successful_run_id()
     if run_id is None:
-        print('No run found')
+        print("No run found")
         raise typer.Exit(code=1)
 
     runs = state.get_all_runs()
@@ -138,10 +134,7 @@ def report(
         run_id_lte=run_id,
         only_successful=True,
     )
-    filtered_runs = [
-        r for r in runs
-        if r.successful and r.run_id <= run_id
-    ]
+    filtered_runs = [r for r in runs if r.successful and r.run_id <= run_id]
 
     metric_set = MetricSet(filtered_runs, metrics)
 
@@ -150,6 +143,7 @@ def report(
 
     if history:
         HistoryReport(metric_set).print()
+
 
 def main():
     """Entry point for the CLI application."""

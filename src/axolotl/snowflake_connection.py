@@ -1,37 +1,13 @@
 import snowflake.connector
-from typing import NamedTuple, List, Tuple
+from typing import NamedTuple, List, Tuple, TypedDict, NotRequired
 from snowflake.connector import DictCursor
 from .state_dao import Metric
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 import time
+import math
 
-
-## TODO: percentiles and histograms
-##        complex_queries = {
-##            "numeric_percentiles": f"""
-##                        WITH percentile_state AS (
-##                            SELECT
-##                                APPROX_PERCENTILE_ACCUMULATE({column_name}) AS {column_name}_STATE
-##                            FROM {fq_table_name}
-##                        )
-##                        SELECT OBJECT_CONSTRUCT(
-##                            '10p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.10),
-##                            '20p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.20),
-##                            '30p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.30),
-##                            '40p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.40),
-##                            '50p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.50),
-##                            '60p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.60),
-##                            '70p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.70),
-##                            '80p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.80),
-##                            '90p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.90),
-##                            '95p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.95),
-##                            '99p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.99)
-##                        ) as numeric_percentiles
-##                        FROM percentile_state AS s;
-##                    """,
-##        }
-##
+import traceback
 
 
 class ColumnInfo(NamedTuple):
@@ -41,13 +17,33 @@ class ColumnInfo(NamedTuple):
     is_nullable: str
 
 
-class SnowflakeOptions(NamedTuple):
+class SnowflakeOptions(TypedDict):
+    # Required fields
     user: str
-    password: str
     account: str
     database: str
     warehouse: str
-    table_schema: str
+    schema: str
+
+    # Password authentication (mutually exclusive with private key auth)
+    password: NotRequired[str]
+
+    # Private key authentication (mutually exclusive with password)
+    private_key: NotRequired[bytes]
+    private_key_path: NotRequired[str]
+    private_key_passphrase: NotRequired[str]
+
+    # Optional additional fields that can be passed to snowflake.connector.connect()
+    role: NotRequired[str]
+    schema: NotRequired[str]
+    authenticator: NotRequired[str]
+    session_parameters: NotRequired[dict]
+    timezone: NotRequired[str]
+    autocommit: NotRequired[bool]
+    client_session_keep_alive: NotRequired[bool]
+    validate_default_parameters: NotRequired[bool]
+    paramstyle: NotRequired[str]
+    application: NotRequired[str]
 
 
 SNOWFLAKE_NUMERIC_TYPES = [
@@ -104,6 +100,7 @@ SNOWFLAKE_VECTOR_TYPES = [
 ]
 
 
+## TODO: turn these into enums
 def get_simple_data_type(data_type: str) -> str:
     data_type = data_type.upper()
     if data_type == "BOOLEAN":
@@ -126,18 +123,33 @@ def get_simple_data_type(data_type: str) -> str:
 
 class SnowflakeConn:
     """
-    Wraps a Snowflake conn in order to take a snapshot of one database and table_schema.
+    Wraps a Snowflake conn in order to take a snapshot of one database and
+    schema.
     """
 
     def __init__(self, options: SnowflakeOptions, run_id: int):
-        self.conn = snowflake.connector.connect(
-            **options._asdict(),
-        )
-        self.database = options.database
-        self.table_schema = options.table_schema
+        self.database = options["database"]
+        ## note that we rename schema to table_schema here
+        self.table_schema = options["schema"]
         self.run_id = run_id
+        try:
+            self.conn = snowflake.connector.connect(**options)
+        except Exception as e:
+            print(e)
+            ## FIXME: don't print passwords here
+            print(f"Failed to create snowflake connection: {options}")
+            raise e
 
-    def snapshot(self, batch_size=20) -> Iterator[List[Metric]]:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.conn:
+            self.conn.close()
+        # Return None to propagate any exceptions
+        return None
+
+    def snapshot(self, batch_size=10) -> Iterator[List[Metric]]:
         """
         Capture metrics for all tables in the configured database/schema, both
         table-level and column-level for all tables
@@ -180,22 +192,208 @@ class SnowflakeConn:
 
             print(f"Snapshotted columns in {round(t2-t1, 2)} seconds")
 
-    def scan_numeric_column(
+    def _common_queries(
         self,
         column_info: ColumnInfo,
+    ) -> dict[str, str]:
+        col_sql = f'c."{column_info.column_name}"'
+        return {
+            "data_type": f"'{column_info.data_type}'",
+            "row_count": "COUNT(*)",
+            "null_count": f"COUNT_IF({col_sql} IS NULL)",
+            "null_pct": f'100.0 * "null_count" / "row_count"',
+            "distinct_count": f"COUNT(DISTINCT({col_sql}))",
+            "distinct_rate": f'100.0 * "distinct_count" / ("row_count" - "null_count")',
+        }
+
+    def _package_metrics(
+        self, column_info: ColumnInfo, query_results: dict[str, any]
     ) -> List[Metric]:
         """
-        Get histogram and percentile metrics, if this column is a numeric or datetime type.
+        Takes the output of _query_values and packages them into metrics list
+        """
+        metrics: List[Metric] = []
+        (fq_table_name, column_name, data_type, is_nullable) = column_info
+
+        if not query_results["_measured_at"]:
+            raise ValueError("missing _measured_at")
+
+        for metric_name, metric_value in query_results.items():
+            if metric_name.startswith("_"):
+                continue
+
+            metrics.append(
+                Metric(
+                    run_id=self.run_id,
+                    target_table=fq_table_name,
+                    target_column=column_name,
+                    metric_name=metric_name,
+                    metric_value=metric_value,
+                    measured_at=query_results["_measured_at"],
+                )
+            )
+        return metrics
+
+    def _query_values(
+        self, query_columns: dict[str, str], column_info: ColumnInfo
+    ) -> dict[str, any]:
+        """
+        Use this instead of _query_metrics when you need to do something else to
+        the results before packaging them.
+
+        This packages the results into a dict[metric name, metric value] instaed
+        of a list of metrics.
+        """
+
+        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        res: dict[str, any] = {}
+
+        query = f"""
+            SELECT CURRENT_TIMESTAMP() as "_measured_at",
+                {",\n".join(
+                    f'{metric_query} AS "{metric_name}"'
+                    for metric_name, metric_query
+                    in query_columns.items()
+                )}
+            FROM {fq_table_name} as c
+        """
+
+        with self.conn.cursor(DictCursor) as cur:
+            try:
+                cur.execute(query)
+                # return cur.query_id
+
+                # query_ids.append(cur.sfqid)
+                results = cur.fetchone()
+
+            except Exception as e:
+                print(e)
+                print(query)
+                raise e
+            res = results
+            # for metric_name, metric_value in results.items():
+            #    res[metric_name] = metric_value
+
+        return res
+
+    def _query_metrics(
+        self, query_columns: dict[str, str], column_info: ColumnInfo
+    ) -> List[Metric]:
+        """
+        Given the column info and a dict of metric names -> select clauses,
+        - compose and run the query
+        - package the results into a list of Metrics
+
+        Synchronous. Only works on simple queries that don't require CTEs or
+        joins. The FROM clause is hard-coded to column_info.fq_table_name.
+        """
+
+        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        metrics: List[Metric] = []
+
+        query = f"""
+            SELECT CURRENT_TIMESTAMP() as "_measured_at",
+                {",\n".join(
+                    f'{metric_query} AS "{metric_name}"'
+                    for metric_name, metric_query
+                    in query_columns.items()
+                )}
+            FROM {fq_table_name} as c
+        """
+
+        with self.conn.cursor(DictCursor) as cur:
+            try:
+                cur.execute(query)
+                # return cur.query_id
+
+                # query_ids.append(cur.sfqid)
+                results = cur.fetchone()
+            except Exception as e:
+                print(e)
+                print(query)
+                raise e
+
+            for metric_name, metric_value in results.items():
+                if metric_name.startswith("_"):
+                    continue
+                metrics.append(
+                    Metric(
+                        run_id=self.run_id,
+                        target_table=fq_table_name,
+                        target_column=column_name,
+                        metric_name=metric_name,
+                        metric_value=metric_value,
+                        measured_at=results["_measured_at"],
+                    )
+                )
+        return metrics
+
+    def scan_text_or_bool_column(self, column_info: ColumnInfo) -> List[Metric]:
+        """
+        Scan a single column of Text or Boolean type. These are simple and
+        hopefully should be efficient.
+
+        Returns:
+            List of Metrics for this column
+        """
+        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        data_type_simple = get_simple_data_type(data_type)
+
+        if data_type_simple != "string" and data_type_simple != "boolean":
+            raise f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean"
+
+        col_sql = f'c."{column_name}"'
+        query_columns = self._common_queries(column_info)
+
+        if data_type_simple == "string":
+            query_columns.update(
+                {
+                    "string_avg_length": f"AVG(LEN({col_sql}))",
+                }
+            )
+        elif data_type_simple == "boolean":
+            query_columns.update(
+                {
+                    "true_count": f"COUNT_IF({col_sql} = TRUE)",
+                    "false_count": f"COUNT_IF({col_sql} = FALSE)",
+                }
+            )
+        return self._query_metrics(query_columns, column_info)
+
+    def scan_numeric_column(self, column_info: ColumnInfo) -> List[Metric]:
+        """
+        Scan a single column of Numeric type. This involves simple stats as well
+        as histograms and percentiles.
+
+        Returns:
+            List of Metrics for this column
         """
 
         (fq_table_name, column_name, data_type, is_nullable) = column_info
         data_type_simple = get_simple_data_type(data_type)
 
         if data_type_simple != "numeric":
-            print(f"not numeric: {fq_table_name}.{column_name}: {data_type_simple}")
-            return []
+            # traceback.print_exc()
+            raise ValueError(
+                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not numeric"
+            )
 
-        num_buckets = 10
+        col_sql = f'c."{column_name}"'
+        query_columns = self._common_queries(column_info)
+
+        query_columns.update(
+            {
+                "numeric_min": f"MIN({col_sql})",
+                "numeric_max": f"MAX({col_sql})",
+                "numeric_mean": f"AVG({col_sql})",
+                "numeric_variance": f"VARIANCE({col_sql})",
+            }
+        )
+
+        ## Get the simple metrics first
+        query_values = self._query_values(query_columns, column_info)
+        metrics = self._package_metrics(column_info, query_values)
+
         percentile_query = f"""
                     WITH percentile_state AS (
                         SELECT
@@ -219,36 +417,7 @@ class SnowflakeConn:
                     FROM percentile_state AS s;
                 """
 
-        histogram_query = f"""
-                    WITH cte AS (
-                        SELECT
-                            MIN({column_name}) AS {column_name}_MIN,
-                            MAX({column_name}) AS {column_name}_MAX,
-                            LEAST({column_name}_MAX - {column_name}_MIN, {num_buckets}) AS NUM_BUCKETS,
-                            ({column_name}_MAX - {column_name}_MIN) / {num_buckets} AS BUCKET_SIZE
-                        FROM {fq_table_name}
-                    ),
-                    histogram_buckets AS (
-                        SELECT
-                            WIDTH_BUCKET({column_name},
-                                (SELECT {column_name}_MIN FROM cte),
-                                (SELECT {column_name}_MAX FROM cte),
-                                (SELECT NUM_BUCKETS FROM cte)
-                            ) * (SELECT BUCKET_SIZE FROM cte) as bucket,
-                            COUNT(*) as count
-                        FROM {fq_table_name}
-                        GROUP BY bucket
-                    )
-                    SELECT
-                        CURRENT_TIMESTAMP() as MEASURED_AT,
-                        OBJECT_AGG(bucket::VARCHAR, count) as NUMERIC_HISTOGRAM
-                    FROM histogram_buckets;
-                """
-
-        metrics = []
-
         try:
-            ## TODO: is it more efficient to merge these into one join instead of repeated scans?
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute(percentile_query)
                 results = cur.fetchone()
@@ -265,46 +434,90 @@ class SnowflakeConn:
                 )
         except Exception as e:
             print(f"Error running percentile query: {e}, {percentile_query}")
-            raise
+            raise e
 
-        try:
-            with self.conn.cursor(DictCursor) as cur:
-                cur.execute(histogram_query)
-                results = cur.fetchone()
-                measured_at = results["MEASURED_AT"]
-                metrics.append(
-                    Metric(
-                        run_id=self.run_id,
-                        target_table=fq_table_name,
-                        target_column=column_name,
-                        metric_name="numeric_histogram",
-                        metric_value=results["NUMERIC_HISTOGRAM"],
-                        measured_at=measured_at,
+        approx_numeric_range = math.floor(
+            abs(query_values["numeric_max"] - query_values["numeric_min"])
+        )
+        if approx_numeric_range >= 1:
+            num_buckets = min(10, approx_numeric_range)
+            ## only run histograms if we have at least one bucket
+            try:
+                histogram_query = f"""
+                        WITH cte AS (
+                            SELECT
+                                MIN({column_name}) AS {column_name}_MIN,
+                                MAX({column_name}) AS {column_name}_MAX,
+                                ({column_name}_MAX - {column_name}_MIN) / {num_buckets} AS BUCKET_SIZE
+                            FROM {fq_table_name}
+                        ),
+                        histogram_buckets AS (
+                            SELECT
+                                WIDTH_BUCKET({column_name},
+                                    (SELECT {column_name}_MIN FROM cte),
+                                    (SELECT {column_name}_MAX FROM cte),
+                                    {num_buckets}
+                                ) * (SELECT BUCKET_SIZE FROM cte) as bucket,
+                                COUNT(*) as count
+                            FROM {fq_table_name}
+                            GROUP BY bucket
+                        )
+                        SELECT
+                            CURRENT_TIMESTAMP() as MEASURED_AT,
+                            OBJECT_AGG(bucket::VARCHAR, count) as NUMERIC_HISTOGRAM
+                        FROM histogram_buckets;
+                    """
+                with self.conn.cursor(DictCursor) as cur:
+                    cur.execute(histogram_query)
+                    results = cur.fetchone()
+                    measured_at = results["MEASURED_AT"]
+                    metrics.append(
+                        Metric(
+                            run_id=self.run_id,
+                            target_table=fq_table_name,
+                            target_column=column_name,
+                            metric_name="numeric_histogram",
+                            metric_value=results["NUMERIC_HISTOGRAM"],
+                            measured_at=measured_at,
+                        )
                     )
-                )
-        except Exception as e:
-            print(f"Error running histogram query (numeric): {e}, {histogram_query}")
-            # raise
+            except Exception as e:
+                print(f"Error running histogram query: {e}, {histogram_query}")
+                raise e
 
         return metrics
 
-    ## Hstograms and percentiles
-
-    def scan_datetime_column(
-        self,
-        column_info: ColumnInfo,
-    ) -> List[Metric]:
+    def scan_datetime_column(self, column_info: ColumnInfo) -> List[Metric]:
         """
-        Get histogram and percentile metrics, if this column is a numeric or datetime type.
+        Scan a single column of Datetime type. This involves simple stats as well
+        as the datetime histogram.
+
+        Returns:
+            List of Metrics for this column
         """
 
         (fq_table_name, column_name, data_type, is_nullable) = column_info
         data_type_simple = get_simple_data_type(data_type)
 
         if data_type_simple != "datetime":
-            print(f"not datetime: {fq_table_name}.{column_name}: {data_type_simple}")
-            return []
+            raise ValueError(
+                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not datetime"
+            )
 
+        col_sql = f'c."{column_name}"'
+        query_columns = self._common_queries(column_info)
+
+        query_columns.update(
+            {
+                "numeric_min": f"MIN({col_sql})",
+                "numeric_max": f"MAX({col_sql})",
+            }
+        )
+
+        ## Get the simple metrics first
+        metrics = self._query_metrics(query_columns, column_info)
+
+        ## Then the histogram
         histogram_query = f"""
                     WITH date_range AS (
                         SELECT
@@ -370,9 +583,7 @@ class SnowflakeConn:
                         OBJECT_AGG(bucket, count) as NUMERIC_HISTOGRAM
                     FROM formatted_buckets;
                 """
-        # print(histogram_query)
 
-        metrics = []
         try:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute(histogram_query)
@@ -389,8 +600,8 @@ class SnowflakeConn:
                     )
                 )
         except Exception as e:
-            print(f"Error running histogram query (datetime): {e}, {histogram_query}")
-            # raise
+            print(f"Error running datetime histogram query: {e}, {histogram_query}")
+            raise e
 
         return metrics
 
@@ -412,101 +623,19 @@ class SnowflakeConn:
             List of Metrics for this column
         """
         (fq_table_name, column_name, data_type, is_nullable) = column_info
-
         data_type_simple = get_simple_data_type(data_type)
 
-        # use c."column_name" form to avoid conflicts with outputs
-        col_sql = f'c."{column_name}"'
-
-        # metric name -> metric query
-        query_columns = {
-            "data_type": f"'{data_type}'",
-            "row_count": "COUNT(*)",
-            "null_count": f"COUNT_IF({col_sql} IS NULL)",
-            "null_pct": f'100.0 * "null_count" / "row_count"',
-            "distinct_count": f'COUNT(DISTINCT {col_sql})',
-            "distinct_rate": f'100.0 * "distinct_count" / ("row_count" - "null_count")',
-        }
-
-        if data_type_simple == "numeric" or data_type_simple == "datetime":
-            query_columns.update(
-                {
-                    "numeric_min": f"MIN({col_sql})",
-                    "numeric_max": f"MAX({col_sql})",
-                }
-            )
-
-        if data_type_simple == "numeric":
-            query_columns.update(
-                {
-                    "numeric_mean": f"AVG({col_sql})",
-                    "numeric_stddev": f"STDDEV({col_sql})",
-                }
-            )
-
-        if data_type_simple == "string":
-            query_columns.update(
-                {
-                    "string_avg_length": f"AVG(LEN({col_sql}))",
-                }
-            )
-
-        if data_type_simple == "boolean":
-            query_columns.update(
-                {
-                    "true_count": f"COUNT_IF({col_sql} = TRUE)",
-                    "false_count": f"COUNT_IF({col_sql} = FALSE)",
-                }
-            )
-        ## TODO: Stats for the other types
-
-        query = f"""
-            SELECT CURRENT_TIMESTAMP() as "_measured_at",
-                {",\n".join(
-                    f'{metric_query} AS "{metric_name}"'
-                    for metric_name, metric_query
-                    in query_columns.items()
-                )}
-            FROM {fq_table_name} as c
-        """
-
-        metrics: List[Metric] = []
-        # query_ids = []
-
-        print(f"scanning {fq_table_name}.{column_name}: {data_type_simple}")
-        if data_type_simple == "datetime":
-            metrics.extend(self.scan_datetime_column(column_info))
-        elif data_type_simple == "numeric":
-            metrics.extend(self.scan_numeric_column(column_info))
-
-        with self.conn.cursor(DictCursor) as cur:
-            try:
-                cur.execute(query)
-                # return cur.query_id
-
-                # query_ids.append(cur.sfqid)
-                results = cur.fetchone()
-            except Exception as e:
-                print(e)
-                print(query)
-                raise e
-
-            for metric_name, metric_value in results.items():
-                if metric_name.startswith("_"):
-                    continue
-                metrics.append(
-                    Metric(
-                        run_id=self.run_id,
-                        target_table=fq_table_name,
-                        target_column=column_name,
-                        metric_name=metric_name,
-                        metric_value=metric_value,
-                        measured_at=results["_measured_at"],
-                    )
-                )
-
-        return metrics
-        # return query_id
+        match data_type_simple:
+            case "numeric":
+                return self.scan_numeric_column(column_info)
+            case "datetime":
+                return self.scan_datetime_column(column_info)
+            case "string" | "boolean":
+                return self.scan_text_or_bool_column(column_info)
+            case _:
+                ## unknown case, we'll just do the simple queries
+                query_columns = self._common_queries(column_info)
+                return self._query_metrics(query_columns, column_info)
 
     def list_columns(self, table_name: str) -> List[ColumnInfo]:
         """
@@ -565,7 +694,8 @@ class SnowflakeConn:
 
         with self.conn.cursor() as cur:
             try:
-                cur.execute(f"""
+                cur.execute(
+                    f"""
                     SELECT
                         TABLE_CATALOG,
                         TABLE_SCHEMA,
@@ -578,11 +708,12 @@ class SnowflakeConn:
                     FROM INFORMATION_SCHEMA.TABLES
                     WHERE TABLE_CATALOG = '{self.database}'
                     AND TABLE_SCHEMA = '{self.table_schema}';
-                """)
+                """
+                )
 
             except Exception as e:
                 print(f"Error running table: {e}")
-                raise
+                raise e
 
             for (
                 table_catalog,
@@ -636,16 +767,18 @@ class SnowflakeConn:
 
         with self.conn.cursor() as cur:
             try:
-                cur.execute(f"""
+                cur.execute(
+                    f"""
                     select {','.join(
                         f"TO_TIMESTAMP_TZ(SYSTEM$LAST_CHANGE_COMMIT_TIME('{table_name}') / 1e9)"
                         for table_name in fq_table_names
                     )}
-                """)
+                """
+                )
                 results = cur.fetchone()
             except Exception as e:
                 print(f"Error getting table update times: {e}")
-                raise
+                raise e
 
             metrics += [
                 Metric(
