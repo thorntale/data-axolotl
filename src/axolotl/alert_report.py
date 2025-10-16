@@ -19,7 +19,7 @@ class AlertReport:
     def print(self):
         all_alerts = self.metric_set.get_all_alerts()
 
-        self.console.print(all_alerts)
+        # self.console.print(all_alerts)
 
         # severity -> table -> column|None -> alert
         grouped_alerts = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
@@ -35,10 +35,11 @@ class AlertReport:
                 for alert in alerts
             )
             self.console.print(Panel.fit(
-                f"[bold blue]{severity.value}[/bold blue] [bright_black]({num_alerts} alerts)"
+                f"[bold red]{severity.value}[/bold red] [bright_black]({num_alerts} alerts)",
+                border_style="red",
             ))
             if not num_alerts:
-                self.console.print(Padding("[bright_black]No Alerts", (0, 2)))
+                self.console.print(Padding("[bright_black]No Alerts\n", (0, 2)))
 
             for table, alerts_by_column in sorted(alerts_by_table_column.items()):
                 self.console.print(Padding(
@@ -65,12 +66,13 @@ class AlertReport:
                             self._format_alert(alert),
                             (0, 6),
                         ), highlight=False)
+                self.console.print()
 
     def _format_alert(self, alert: MetricAlert) -> str:
         name = alert.pretty_name + ':'
         return (
             "- "
-            + escape(f"{name:<15s} ")
+            + escape(f"{name:<25s} ")
             + f"[bright_black]{escape(alert.prev_value_formatted)} → [/bright_black]"
             + f"[magenta]{escape(alert.current_value_formatted)}[/magenta]"
             + (' ' * (30 - len(alert.prev_value_formatted + alert.current_value_formatted)))

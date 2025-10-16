@@ -5,6 +5,7 @@ from typing import Any
 from enum import Enum
 from abc import ABC, abstractmethod
 from datetime import datetime
+from datetime import timedelta
 import itertools
 from statistics import stdev
 
@@ -89,16 +90,18 @@ class MetricTracker(ABC):
         )
 
     def value_formatter(self, value: Any) -> str:
-        if value == True:
+        if value is True:
             return 'true'
-        if value == False:
+        if value is False:
             return 'false'
         if value is None:
             return 'null'
         if isinstance(value, datetime):
             return value.strftime("%Y-%m-%d %H:%M:%S %Z")
-        if isinstance(value, (int, float)):
+        if isinstance(value, (int, float)) and value.is_integer():
             return f"{value:,}"
+        if isinstance(value, float):
+            return f"{value:.6g}"
         return str(value)
 
     def get_current_value(self) -> Any:
@@ -123,7 +126,11 @@ class MetricTracker(ABC):
         """ Returns a list of all delta, in order, for numeric types """
         def diff(a, b):
             try:
-                return b - a
+                diff = b - a
+                if isinstance(diff, timedelta):
+                    return diff.total_seconds()
+                else:
+                    return diff
             except TypeError:
                 return None
         return [
@@ -143,16 +150,44 @@ class MetricTracker(ABC):
         if not deltas:
             return None
         latest = deltas[-1]
-        if not latest:
+        if latest is None:
             return None
-        latest_30 = [d for d in deltas[-MAX_DELTA_ESTIMATION_COUNT - 1 : -1] if d is not None]
+        latest_30 = [
+            d for
+            d in deltas[-MAX_DELTA_ESTIMATION_COUNT - 1 : -1]
+            if d is not None
+        ]
         if len(latest_30) < MIN_DELTA_ESTIMATION_COUNT:
             return None
 
         def avg(v):
             return sum(v) / len(v)
 
-        return abs(latest - avg(latest_30)) / stdev(latest_30)
+        sd = stdev(latest_30)
+        diff = latest - avg(latest_30)
+
+        if sd == 0 and diff == 0:
+            return 0
+        if sd == 0:
+            return float('inf')
+        return abs(diff / sd)
+
+    def get_delta_z_alert(self) -> Optional[tuple[AlertSeverity, AlertMethod, AlertingDelta]]:
+        z_score = self.estimate_delta_z_score()
+        if z_score is None:
+            return None
+        # large deltas are major alerts, this is definitely a systemic change
+        if z_score > 4:
+            return (AlertSeverity.Major, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
+        # anything from 3-4z is a minor alert
+        if z_score > 3:
+            return (AlertSeverity.Minor, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
+        # if z is 0 AND the metric didn't change, give unchanged
+        if z_score == 0 and self.get_prev_value() == self.get_current_value():
+            return (AlertSeverity.Unchanged, AlertMethod.ZScore, f"==,Δ=0z")
+        # if z is 0 but the metric did change, put the alert in other
+        # ex: a metric increases by +1 every run
+        return (AlertSeverity.Other, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
 
     def estimate_delta_pct(self) -> Optional[float]:
         """
@@ -188,16 +223,18 @@ class NumericMetricTracker(MetricTracker):
     Comes with a get_change_severity implementation """
     def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
         if self.is_null_status_change():
-            return (AlertSeverity.Major, AlertMethod.ToFromNull, '!=')
-        z_score = self.estimate_delta_z_score()
-        if z_score is not None:
-            if z_score > 4:
-                return (AlertSeverity.Major, AlertMethod.ZScore, f"{z_score:.1f}z")
-            if z_score > 3:
-                return (AlertSeverity.Minor, AlertMethod.ZScore, f"{z_score:.1f}z")
-            if z_score > 0.0:
-                return (AlertSeverity.Other, AlertMethod.ZScore, f"{z_score:.1f}z")
-            return (AlertSeverity.Unchanged, AlertMethod.ZScore, f"{z_score:.1f}z")
+            return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
+        if z_alert := self.get_delta_z_alert():
+            return z_alert
+        # z_score = self.estimate_delta_z_score()
+        # if z_score is not None:
+        #     if z_score > 4:
+        #         return (AlertSeverity.Major, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
+        #     if z_score > 3:
+        #         return (AlertSeverity.Minor, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
+        #     if z_score == 0 and self.get_prev_value() == self.get_current_value():
+        #         return (AlertSeverity.Unchanged, AlertMethod.ZScore, f"==,Δ=0z")
+        #     return (AlertSeverity.Other, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
         dpct = self.estimate_delta_pct()
         if dpct is not None:
             if abs(dpct) > 0.2:
@@ -209,6 +246,25 @@ class NumericMetricTracker(MetricTracker):
             return (AlertSeverity.Unchanged, AlertMethod.Pct, f"{dpct:+.0f}%")
         # probably unreachable
         return (AlertSeverity.Major, AlertMethod.Changed, '!=')
+
+class DatetimeMetricTracker(MetricTracker):
+    def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
+        if self.is_null_status_change():
+            return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
+        if z_alert := self.get_delta_z_alert():
+            return z_alert
+        # z_score = self.estimate_delta_z_score()
+        # if z_score is not None:
+        #     if z_score > 4:
+        #         return (AlertSeverity.Major, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
+        #     if z_score > 3:
+        #         return (AlertSeverity.Minor, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
+        #     if z_score == 0 and self.get_prev_value() == self.get_current_value():
+        #         return (AlertSeverity.Unchanged, AlertMethod.ZScore, f"==,Δ=0z")
+        #     return (AlertSeverity.Other, AlertMethod.ZScore, f"Δ={z_score:.2f}z")
+        if self.get_current_value() != self.get_prev_value():
+            return (AlertSeverity.Minor, AlertMethod.Changed, '!=')
+        return (AlertSeverity.Unchanged, AlertMethod.Changed, '==')
 
 class PercentMetricTracker(NumericMetricTracker):
     """ Numeric metric tracker for relative values.
@@ -234,7 +290,7 @@ class EqualityMetricTracker(MetricTracker):
     """ Alerts if the metric changes at all """
     def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
         if self.is_null_status_change():
-            return (AlertSeverity.Major, AlertMethod.ToFromNull, '!=')
+            return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
         if self.get_current_value() != self.get_prev_value():
             return (AlertSeverity.Minor, AlertMethod.Changed, '!=')
         return (AlertSeverity.Unchanged, AlertMethod.Changed, '==')
@@ -279,8 +335,13 @@ class TableStalenessTracker(NumericMetricTracker):
     def value_formatter(self, value: int) -> str:
         if value is None:
             return super().value_formatter(value)
-        return super().value_formatter(value) + ' hours'
-
+        if value < 1:
+            return f"{value * 60:.2f} minutes"
+        if value < 1/60:
+            return f"{value * 3600:.0f} seconds"
+        if value > 48:
+            return f"{value /24:.2f} days"
+        return f'{value:.2f} hours'
 
 class ColumnTypeTracker(EqualityMetricTracker):
     pretty_name = 'Column Type'
@@ -297,3 +358,39 @@ class DistinctCount(NumericMetricTracker):
 class DistinctRate(PercentMetricTracker):
     pretty_name = 'Distinct Rate'
     description = 'Distinct count / non-null row count.'
+
+class NullCount(NumericMetricTracker):
+    pretty_name = 'Null Count'
+    description = 'Count of non-null values.'
+
+class NullRate(PercentMetricTracker):
+    pretty_name = 'Null Rate'
+    description = 'What percentage of rows are null.'
+
+class Min(NumericMetricTracker):
+    pretty_name = 'Minimum'
+    description = 'Minimum non-null value'
+
+class Max(NumericMetricTracker):
+    pretty_name = 'Maximum'
+    description = 'Maximum non-null value'
+
+class MinTS(DatetimeMetricTracker):
+    pretty_name = 'Minimum'
+    description = 'Minimum non-null value'
+
+class MaxTS(DatetimeMetricTracker):
+    pretty_name = 'Maximum'
+    description = 'Maximum non-null value'
+
+class Mean(NumericMetricTracker):
+    pretty_name = 'Mean'
+    description = 'Average non-null value'
+
+class AvgStringLength(NumericMetricTracker):
+    pretty_name = 'Average String Length'
+    description = 'Average string length'
+
+class Stddev(NumericMetricTracker):
+    pretty_name = 'Standard Deviation'
+    description = 'Standard deviation amoung non-null values'

@@ -1,8 +1,9 @@
+from rich.console import Console
 from typing import List
 from typing import Any
 from typing import Optional
 from typing import NamedTuple
-from datetime import datetime
+from datetime import datetime, date
 from datetime import timezone
 from contextlib import contextmanager
 import simplejson as json
@@ -79,7 +80,9 @@ class StateDAO:
             self._end_run(run_id, True)
         except Exception as e:
             self._end_run(run_id, False)
-            print('Run failed!!!', e)
+            console = Console()
+            console.print('Run failed!!!')
+            console.print(e)
 
     def _make_new_run(self) -> int:
         """ returns the run id """
@@ -141,7 +144,7 @@ class StateDAO:
         p = self.table_prefix
         serialized_value = (
             metric.metric_value.isoformat()
-            if isinstance(metric.metric_value, datetime) else
+            if isinstance(metric.metric_value, (datetime, date)) else
             json.dumps(metric.metric_value)
         )
         self.query(
@@ -163,7 +166,7 @@ class StateDAO:
                 metric.target_column,
                 metric.metric_name,
                 serialized_value,
-                1 if isinstance(metric.metric_value, datetime) else 0,
+                1 if isinstance(metric.metric_value, (datetime, date)) else 0,
                 metric.measured_at,
             ],
         )
@@ -204,13 +207,19 @@ class StateDAO:
                 return dt.replace(tzinfo=timezone.utc)
             return dt
 
+        def parse_datetime(d: str) -> date | datetime:
+            if ' ' in d or 'T' in d:
+                return ensure_tz(datetime.fromisoformat(d))
+            else:
+                return date.fromisoformat(d)
+
         return [
             Metric(
                 row[0],
                 row[1],
                 row[2],
                 row[3],
-                ensure_tz(datetime.fromisoformat(row[4])) if row[5] else json.loads(row[4]),
+                parse_datetime(row[4]) if row[5] else json.loads(row[4]),
                 ensure_tz(datetime.fromisoformat(row[6])),
             )
             for row
