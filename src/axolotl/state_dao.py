@@ -23,6 +23,19 @@ class Metric(NamedTuple):
     metric_value: Any
     measured_at: datetime
 
+    def matches_filter(self, filters: List[str]) -> bool:
+        def is_sublist_of(needle, haystack):
+            return any(
+                needle == haystack[i:i + len(needle)]
+                for i in range(0, len(haystack) - len(needle) + 1)
+            )
+        if not filters:
+            return True
+        haystack = f"{self.target_table}.{self.target_column}".lower().split('.')
+        return any(
+            is_sublist_of(f.lower().split('.'), haystack)
+            for f in filters
+        )
 
 class StateDAO:
     """

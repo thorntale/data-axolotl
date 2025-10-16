@@ -47,6 +47,14 @@ class MetricSet:
         }
 
     def get_metric_trackers_for_table(self, table: str) -> List[MetricTracker]:
+        # We might list a table because there are column metrics within it, but
+        # not track any table metrics. In that case, skip its metrics.
+        if not any(
+            t == table and c is None
+            for t, c, m in self.alertable_metric_keys
+        ):
+            return
+
         yield ts.TableSizeTracker(
             self._get_metric_with_nulls(MetricKey(table, None, 'bytes')),
         )

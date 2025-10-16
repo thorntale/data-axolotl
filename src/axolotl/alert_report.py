@@ -36,7 +36,7 @@ class AlertReport:
                 for alert in alerts
             )
             self.console.print(Panel.fit(
-                f"[bold red]{severity.value}[/bold red] [bright_black]({num_alerts} columns)",
+                f"[bold red]{severity.value}[/bold red] [bright_black]({num_alerts} metrics)",
                 border_style="red",
             ))
             if not num_alerts:
