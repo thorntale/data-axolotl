@@ -1,3 +1,5 @@
 venv
 __pycache__
 local.db
+conf/*p8
+conf/*pub
