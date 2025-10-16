@@ -10,21 +10,58 @@ import tomllib
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .snowflake_connection import SnowflakeOptions
+from typing import NamedTuple, List, Tuple, TypedDict, NotRequired
 
 
 class MetricsConfig(NamedTuple):
     """Configuration for metrics collection."""
 
     max_threads: int
-    query_timeout_seconds: int
+    per_query_timeout_seconds: int
+    per_column_timeout_seconds: int
+    per_run_timeout_seconds: int
+    exclude_expensive_queries: bool
+
+
+class SnowflakeOptions(TypedDict):
+    # Required fields
+    user: str
+    account: str
+    database: str
+    warehouse: str
+
+    #TODO make these mutually exclusive!
+    include_schemas: NotRequired[List[str]]
+    exclude_schemas: NotRequired[List[str]]
+
+    # Password authentication (mutually exclusive with private key auth)
+    password: NotRequired[str]
+
+    # Private key authentication (mutually exclusive with password)
+    private_key: NotRequired[bytes]
+    private_key_path: NotRequired[str]
+    private_key_passphrase: NotRequired[str]
+
+    # Optional additional fields that can be passed to snowflake.connector.connect()
+    role: NotRequired[str]
+    authenticator: NotRequired[str]
+    session_parameters: NotRequired[dict]
+    timezone: NotRequired[str]
+    autocommit: NotRequired[bool]
+    client_session_keep_alive: NotRequired[bool]
+    validate_default_parameters: NotRequired[bool]
+    paramstyle: NotRequired[str]
+    application: NotRequired[str]
+
+    ## Metrics config for this database. If it's missing, use the default
+    metricsConfig: MetricsConfig
 
 
 class AxolotlConfig(NamedTuple):
     """Top-level configuration for Axolotl."""
 
     connections: dict[str, SnowflakeOptions]
-    metrics: dict[str, MetricsConfig]
+    default_metrics_config: MetricsConfig
 
 
 def _substitute_env_vars(value: Any) -> Any:
@@ -59,7 +96,10 @@ def _substitute_env_vars(value: Any) -> Any:
 
 
 def _parse_snowflake_connection(
-    conn_name: str, conn_config: dict[str, Any]
+    conn_name: str,
+    conn_config: dict[str, Any],
+    default_metrics_config: MetricsConfig,
+    connection_specific_metrics: dict[str, Any] | None = None,
 ) -> SnowflakeOptions:
     """
     Parse a Snowflake connection configuration into a SnowflakeOptions object.
@@ -67,6 +107,8 @@ def _parse_snowflake_connection(
     Args:
         conn_name: Name of the connection (for error messages)
         conn_config: Dictionary containing connection configuration
+        default_metrics_config: Default metrics configuration to use if not specified
+        connection_specific_metrics: Optional connection-specific metrics from metrics.<conn_name>
 
     Returns:
         SnowflakeOptions
@@ -81,7 +123,7 @@ def _parse_snowflake_connection(
         )
 
     # Required fields for SnowflakeOptions
-    required_fields = ["account", "user", "database", "warehouse", "schema"]
+    required_fields = ["account", "user", "database", "warehouse"]
     missing_fields = [field for field in required_fields if field not in conn_config]
 
     if missing_fields:
@@ -98,22 +140,27 @@ def _parse_snowflake_connection(
             f"'{conn_name}' must have either password or private key authentication configured"
         )
 
-    return SnowflakeOptions(**conn_config)
+    # Use connection-specific metrics if available, otherwise use default
+    metrics_config = default_metrics_config
+    if connection_specific_metrics:
+        metrics_config = _parse_metrics_config(connection_specific_metrics)
+
+    # Create SnowflakeOptions with metricsConfig field
+    return SnowflakeOptions(**conn_config, metricsConfig=metrics_config)
 
 
 def _parse_metrics_config(metrics_config: dict[str, Any]) -> MetricsConfig:
     """
-    Parse a metrics configuration section.
-
-    Args:
-        metrics_config: Dictionary containing metrics configuration
-
-    Returns:
-        MetricsConfig object
+    Parse a metrics config section, with defaults, from a dictionary
     """
     return MetricsConfig(
         max_threads=metrics_config.get("max_threads", 10),
-        query_timeout_seconds=metrics_config.get("query_timeout_seconds", 60),
+        per_query_timeout_seconds=metrics_config.get("per_query_timeout_seconds", 10),
+        per_column_timeout_seconds=metrics_config.get("per_column_timeout_seconds", 60),
+        per_run_timeout_seconds=metrics_config.get("per_run_timeout_seconds", 60 * 5),
+        exclude_expensive_queries=metrics_config.get(
+            "exclude_expensive_queries", False
+        ),
     )
 
 
@@ -144,29 +191,38 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     # Substitute environment variables throughout the config
     config = _substitute_env_vars(raw_config)
 
+    # Parse default metrics configuration first
+    metrics_section = config.get("metrics", {})
+
+    # Extract default metrics, but exclude dicts
+    default_metrics_dict = {
+        k: v for k, v in metrics_section.items() if not isinstance(v, dict)
+    }
+    default_metrics_config = _parse_metrics_config(default_metrics_dict)
+
     ## TODO: later, support conn types that aren't snowflake
     connections: dict[str, SnowflakeOptions] = {}
     connections_section = config.get("connections", {})
     for conn_name, conn_config in connections_section.items():
         if conn_config["type"] == "snowflake":
-            connections[conn_name] = _parse_snowflake_connection(conn_name, conn_config)
+            # Check if there's a connection-specific metrics override in metrics.<conn_name>
+            connection_specific_metrics = metrics_section.get(conn_name)
+            connections[conn_name] = _parse_snowflake_connection(
+                conn_name,
+                conn_config,
+                default_metrics_config,
+                connection_specific_metrics,
+            )
         else:
             raise ValueError(f"Invalid connection type {conn_config["type"]}")
 
-    # Parse metrics configurations
-    metrics: dict[str, MetricsConfig] = {}
-    metrics_section = config.get("metrics", {})
-
-    for metrics_name, metrics_config in metrics_section.items():
-        metrics[metrics_name] = _parse_metrics_config(metrics_config)
-
     return AxolotlConfig(
         connections=connections,
-        metrics=metrics,
+        default_metrics_config=default_metrics_config,
     )
 
 
-def load_config(config_path: str | Path = "config.toml") -> AxolotlConfig:
+def load_config(config_path: str | Path = "conf/config.toml") -> AxolotlConfig:
     """
     Load configuration from a file with a convenient default path.
 

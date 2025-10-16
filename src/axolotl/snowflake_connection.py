@@ -1,14 +1,15 @@
-import snowflake.connector
-from typing import NamedTuple, List, Tuple, TypedDict, NotRequired
-from snowflake.connector import DictCursor
-from .state_dao import Metric
-from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 import time
-import math
 import json
 
-import traceback
+from typing import NamedTuple, List, Tuple, TypedDict, NotRequired
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+
+import snowflake.connector
+from snowflake.connector import DictCursor
+
+from .config import SnowflakeOptions
+from .state_dao import Metric
 
 
 class ColumnInfo(NamedTuple):
@@ -16,35 +17,6 @@ class ColumnInfo(NamedTuple):
     column_name: str
     data_type: str
     is_nullable: str
-
-
-class SnowflakeOptions(TypedDict):
-    # Required fields
-    user: str
-    account: str
-    database: str
-    warehouse: str
-    schema: str
-
-    # Password authentication (mutually exclusive with private key auth)
-    password: NotRequired[str]
-
-    # Private key authentication (mutually exclusive with password)
-    private_key: NotRequired[bytes]
-    private_key_path: NotRequired[str]
-    private_key_passphrase: NotRequired[str]
-
-    # Optional additional fields that can be passed to snowflake.connector.connect()
-    role: NotRequired[str]
-    schema: NotRequired[str]
-    authenticator: NotRequired[str]
-    session_parameters: NotRequired[dict]
-    timezone: NotRequired[str]
-    autocommit: NotRequired[bool]
-    client_session_keep_alive: NotRequired[bool]
-    validate_default_parameters: NotRequired[bool]
-    paramstyle: NotRequired[str]
-    application: NotRequired[str]
 
 
 SNOWFLAKE_NUMERIC_TYPES = [
@@ -130,11 +102,29 @@ class SnowflakeConn:
 
     def __init__(self, options: SnowflakeOptions, run_id: int):
         self.database = options["database"]
-        ## note that we rename schema to table_schema here
-        self.table_schema = options["schema"]
+
+        ## fixme otpional etc.
+        self.include_schemas = options["include_schemas"]
+        self.exclude_schemas = options["exlude_schemas"]
+
         self.run_id = run_id
+
+        ## TODO actually do this
+        self.max_threads = options["metricsConfig"].max_threads
+        self.per_query_timeout_seconds = options[
+            "metricsConfig"
+        ].per_query_timeout_seconds
+        self.per_column_timeout_seconds = options[
+            "metricsConfig"
+        ].per_column_timeout_seconds
+        self.per_run_timeout_seconds = options["metricsConfig"].per_run_timeout_seconds
+        self.exclude_expensive_queries = options[
+            "metricsConfig"
+        ].exclude_expensive_queries
+
         try:
             self.conn = snowflake.connector.connect(**options)
+
         except Exception as e:
             print(e)
             ## FIXME: don't print passwords here
@@ -150,9 +140,9 @@ class SnowflakeConn:
         # Return None to propagate any exceptions
         return None
 
-    def snapshot(self, batch_size=10) -> Iterator[List[Metric]]:
+    def snapshot(self) -> Iterator[List[Metric]]:
         """
-        Capture metrics for all tables in the configured database/schema, both
+        Capture metrics for all tables in the configured database/schemas, both
         table-level and column-level for all tables
 
         Args:
@@ -180,7 +170,7 @@ class SnowflakeConn:
 
         print(f"Snapshotting {len(all_column_infos)} columns...")
 
-        executor = ThreadPoolExecutor(max_workers=batch_size)
+        executor = ThreadPoolExecutor(max_workers=self.max_threads)
         try:
             for column_metrics in executor.map(
                 self.scan_column, all_column_infos, chunksize=1
@@ -449,7 +439,8 @@ class SnowflakeConn:
                     target_column=column_name,
                     metric_name="numeric_histogram",
                     metric_value={
-                        query_values["numeric_max"]: query_values["row_count"] - query_values["null_count"],
+                        query_values["numeric_max"]: query_values["row_count"]
+                        - query_values["null_count"],
                     },
                     measured_at=query_values["_measured_at"],
                 )
