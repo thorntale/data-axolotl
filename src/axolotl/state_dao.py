@@ -6,7 +6,7 @@ from typing import NamedTuple
 from datetime import datetime, date
 from datetime import timezone
 from contextlib import contextmanager
-import simplejson as json
+import simplejson as json  # for Decimal support
 
 
 class Run(NamedTuple):

@@ -136,8 +136,9 @@ class MetricSet:
             yield ts.MaxTS(
                 self._get_metric_with_nulls(MetricKey(table, column, 'numeric_min'))
             )
-            # TODO: numeric_histogram
-            # TODO: numeric_percentiles
+            yield ts.DatetimeHistogram(
+                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_histogram'))
+            )
 
         if data_type_simple == 'structured':
             pass # TODO

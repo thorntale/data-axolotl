@@ -389,7 +389,8 @@ class SnowflakeConn:
                 "numeric_min": f"MIN({col_sql})",
                 "numeric_max": f"MAX({col_sql})",
                 "numeric_mean": f"AVG({col_sql})",
-                "numeric_stddev": f"STDDEV({col_sql})",
+                # cast to float to avoid precision overflow errors
+                "numeric_stddev": f"STDDEV({col_sql}::float)",
             }
         )
 
@@ -554,15 +555,9 @@ class SnowflakeConn:
                             CASE
                                 WHEN dr.DATE_DIFF_DAYS < 1 THEN 'hour'
                                 WHEN dr.DATE_DIFF_MONTHS < 1 THEN 'day'
-                                WHEN dr.DATE_DIFF_YEARS < 1 THEN 'month'
+                                WHEN dr.DATE_DIFF_MONTHS < 36 THEN 'month'
                                 ELSE 'year'
-                            END AS BUCKET_UNIT,
-                            CASE
-                                WHEN dr.DATE_DIFF_DAYS < 1 THEN LEAST(dr.DATE_DIFF_HOURS, 24)
-                                WHEN dr.DATE_DIFF_DAYS < 31 THEN LEAST(dr.DATE_DIFF_DAYS, 31)
-                                WHEN dr.DATE_DIFF_DAYS < 365 THEN LEAST(dr.DATE_DIFF_MONTHS, 12)
-                                ELSE LEAST(dr.DATE_DIFF_YEARS, 10)
-                            END AS NUM_BUCKETS
+                            END AS BUCKET_UNIT
                         FROM date_range dr
                     ),
                     histogram_buckets AS (
@@ -615,7 +610,7 @@ class SnowflakeConn:
                         target_table=fq_table_name,
                         target_column=column_name,
                         metric_name="numeric_histogram",
-                        metric_value=results["NUMERIC_HISTOGRAM"],
+                        metric_value=json.loads(results["NUMERIC_HISTOGRAM"]),
                         measured_at=measured_at,
                     )
                 )

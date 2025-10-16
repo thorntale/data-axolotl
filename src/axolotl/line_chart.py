@@ -212,20 +212,26 @@ class Chart:
                 pass
             elif a is None:
                 if plot.bar_like and b > 0:
-                    z = max(0, axis.get_y(0.0))
-                    grid[z][x] = color(Chars.BarBottom)
-                    for y in range(z + 1, by):
+                    zy = max(0, axis.get_y(0.0))
+                    for y in range(zy + 1, by):
                         grid[y][x] = color(Chars.VLine)
-                    grid[by][x] = color(Chars.EndTop)
+                    if by > zy:
+                        grid[zy][x] = color(Chars.BarBottom)
+                        grid[by][x] = color(Chars.EndTop)
+                    else:
+                        grid[by][x] = color(Chars.LeftEnd)
                 else:
                     grid[by][x] = color(Chars.LeftEnd)
             elif b is None:
                 if plot.bar_like and a > 0:
-                    z = max(0, axis.get_y(0.0))
-                    grid[z][x] = color(Chars.BarBottom)
-                    for y in range(z + 1, ay):
+                    zy = max(0, axis.get_y(0.0))
+                    for y in range(zy + 1, ay):
                         grid[y][x] = color(Chars.VLine)
-                    grid[ay][x] = color(Chars.StartTop)
+                    if ay > zy:
+                        grid[zy][x] = color(Chars.BarBottom)
+                        grid[ay][x] = color(Chars.StartTop)
+                    else:
+                        grid[ay][x] = color(Chars.RightEnd)
                 else:
                     grid[ay][x] = color(Chars.RightEnd)
             elif ay == by:

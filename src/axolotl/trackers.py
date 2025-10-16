@@ -12,6 +12,7 @@ from statistics import stdev
 
 import humanize
 
+from .display_utils import maybe_float
 from .state_dao import Metric
 from .line_chart import arr_to_dots
 
@@ -51,6 +52,7 @@ class ChartMode(Enum):
     HasChanged = 'HasChanged'
     NumericPercentiles = 'NumericPercentiles'
     NumericHistogram = 'NumericHistogram'
+    DatetimeHistogram = 'DatetimeHistogram'
 
 # The display value describing the alert change, ex `+10%` or `5.6std`
 type AlertingDelta = str
@@ -405,17 +407,6 @@ class NumericPercentiles(NumericMetricTracker):
     def value_formatter(self, value: Any) -> str:
         if value is None:
             return super().value_formatter(value)
-        # """ TODO: this is probably more suited to histograms; maybe
-        # a [┄─━═=#=═━─┄] plot would be better here? """
-        # bottom = min(value.values())
-        # top = max(value.values())
-        # sorted_keys = sorted(value.keys(), key=lambda k: int(k[0:-1]))
-        # ys = [
-        #     math.floor(value[k] / ((top - bottom) or 1) * 5)
-        #     for k in sorted_keys
-        # ]
-        # return '⎹' + arr_to_dots([0] + ys) + '⎸'
-
         L = 10
         chars = ' -=░▓░=- '
         part_widths = [
@@ -485,7 +476,7 @@ class NumericHistogram(NumericMetricTracker):
         if value is None:
             return super().value_formatter(value)
         max_val = max(value.values())
-        sorted_keys = sorted(value.keys(), key=lambda k: float(k))
+        sorted_keys = sorted(value.keys(), key=maybe_float)
         ys = [
             math.floor(value[k] / (max_val or 1) * 5.0)
             for k in sorted_keys
@@ -493,13 +484,14 @@ class NumericHistogram(NumericMetricTracker):
         return '⎹' + arr_to_dots(ys) + '⎸'
 
     def get_single_delta(self, a, b) -> float | None:
-        """ Returns average change in percentile across all measured percentiles """
+        """ Returns average absolute change in bucket quanitiy
+        across all measured buckets """
         if a is None or b is None:
             return None
 
         def ordered_values(v):
             return [
-                v[k] for k in sorted(v.keys(), key=float)
+                v[k] for k in sorted(v.keys(), key=maybe_float)
             ]
 
         return sum(
@@ -531,3 +523,13 @@ class NumericHistogram(NumericMetricTracker):
         if not total:
             return None
         return delta / total
+
+
+class DatetimeHistogram(NumericHistogram):
+    chart_mode = ChartMode.DatetimeHistogram
+
+    # def get_single_delta(self, a, b) -> float | None:
+    #     d = super().get_single_delta(a, b)
+    #     if d is None:
+    #         return None
+    #     return d.total_seconds()

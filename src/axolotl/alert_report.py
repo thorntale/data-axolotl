@@ -36,17 +36,17 @@ class AlertReport:
                 for alert in alerts
             )
             self.console.print(Panel.fit(
-                f"[bold red]{severity.value}[/bold red] [bright_black]({num_alerts} metrics)",
+                f"[bold red]{severity.value}[/bold red] [dim]({num_alerts} metrics)",
                 border_style="red",
-            ))
+            ), highlight=False)
             if not num_alerts:
-                self.console.print(Padding("[bright_black]No Alerts\n", (0, 2)))
+                self.console.print(Padding("[dim]No Alerts\n", (0, 2)))
 
             for table, alerts_by_column in sorted(alerts_by_table_column.items()):
                 self.console.print(Padding(
-                    f"[bold blue]{escape(pretty_table_name(table))}[/bold blue] [bright_black]({escape(table)}):",
+                    f"[bold blue]{escape(pretty_table_name(table))}[/bold blue] [dim]({escape(table)}):",
                     (0, 2),
-                ))
+                ), highlight=False)
                 for alert in alerts_by_column[None]:
                     self.console.print(Padding(
                         self._format_alert(alert, '  '),
@@ -58,9 +58,9 @@ class AlertReport:
                         continue
 
                     self.console.print(Padding(
-                        f"[bold green]{escape(column.title())}[/bold green] [bright_black]({escape(column)}):",
+                        f"[bold green]{escape(column.title())}[/bold green] [dim]({escape(column)}):",
                         (0, 4),
-                    ))
+                    ), highlight=False)
 
                     for alert in alerts:
                         self.console.print(Padding(
@@ -76,7 +76,7 @@ class AlertReport:
             "- "
             + escape(f"{name:<20s} ")
             + extra_spacing
-            + f"[bright_black]{escape(alert.prev_value_formatted.rjust(DIFF_SIZE))} → [/bright_black]"
+            + f"[dim]{escape(alert.prev_value_formatted.rjust(DIFF_SIZE))} → [/dim]"
             + f"[magenta]{escape(alert.current_value_formatted.ljust(DIFF_SIZE))}[/magenta]"
             + (' ' * (
                 DIFF_SIZE * 2 + 3
