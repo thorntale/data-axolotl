@@ -20,5 +20,7 @@ user = "fred_the_sasquatch_ro"
 password = "$SASQUATCH_PASSWORD"
 warehouse = "COMPUTE_WH"
 database = "SNOWFLAKE_SAMPLE_DATA"
+
+## TODO: make this optional
 schema = "TPCH_SF10"
 

@@ -77,9 +77,9 @@ class StateDAO:
         try:
             yield run_id
             self._end_run(run_id, True)
-        except:
+        except Exception as e:
             self._end_run(run_id, False)
-            print('Run failed!!!')
+            print('Run failed!!!', e)
 
     def _make_new_run(self) -> int:
         """ returns the run id """
