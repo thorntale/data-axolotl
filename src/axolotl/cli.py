@@ -99,9 +99,15 @@ def rm_run(id: int):
 
 @app.command()
 def report(
+    target: Annotated[Optional[str], typer.Argument(
+        help="""
+            Generate a report for only matching objects. Supports: db, db.schema, db.schema.table, db.schema.table.column
+        """
+    )] = '',
     run_id: Annotated[
         Optional[int],
         typer.Option(
+            '--run',
             help="The run id to make a report on. Defaults to latest successful run."
         ),
     ] = None,
@@ -130,11 +136,20 @@ def report(
         print(f"Run {run_id} was not successful.")
         raise typer.Exit(code=1)
 
-    metrics = state.get_metrics(
-        run_id_lte=run_id,
-        only_successful=True,
-    )
-    filtered_runs = [r for r in runs if r.successful and r.run_id <= run_id]
+    filtered_runs = [
+        r for r in runs
+        if r.successful and r.run_id <= run_id
+    ]
+
+    filters = [t for t in target.split() if t]
+    metrics = [
+        m for m in state.get_metrics(
+            run_id_lte=run_id,
+            only_successful=True,
+        )
+        if m.matches_filter(filters)
+    ]
+
 
     metric_set = MetricSet(filtered_runs, metrics)
 

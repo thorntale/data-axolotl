@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 import time
 import math
+import json
 
 import traceback
 
@@ -397,24 +398,28 @@ class SnowflakeConn:
         percentile_query = f"""
                     WITH percentile_state AS (
                         SELECT
-                            APPROX_PERCENTILE_ACCUMULATE({column_name}) AS {column_name}_STATE
+                            APPROX_PERCENTILE_ACCUMULATE("{column_name}") AS col_state
                         FROM {fq_table_name}
                     )
                     SELECT CURRENT_TIMESTAMP() as MEASURED_AT,
                     OBJECT_CONSTRUCT(
-                        '10p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.10),
-                        '20p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.20),
-                        '30p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.30),
-                        '40p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.40),
-                        '50p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.50),
-                        '60p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.60),
-                        '70p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.70),
-                        '80p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.80),
-                        '90p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.90),
-                        '95p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.95),
-                        '99p', APPROX_PERCENTILE_ESTIMATE(s.{column_name}_STATE, 0.99)
+                        '0p',  APPROX_PERCENTILE_ESTIMATE(col_state, 0.00),
+                        '1p',  APPROX_PERCENTILE_ESTIMATE(col_state, 0.01),
+                        '5p',  APPROX_PERCENTILE_ESTIMATE(col_state, 0.05),
+                        '10p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.10),
+                        '20p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.20),
+                        '30p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.30),
+                        '40p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.40),
+                        '50p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.50),
+                        '60p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.60),
+                        '70p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.70),
+                        '80p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.80),
+                        '90p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.90),
+                        '95p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.95),
+                        '99p', APPROX_PERCENTILE_ESTIMATE(col_state, 0.99),
+                        '100p', APPROX_PERCENTILE_ESTIMATE(col_state, 1.00)
                     ) as NUMERIC_PERCENTILES
-                    FROM percentile_state AS s;
+                    FROM percentile_state;
                 """
 
         try:
@@ -428,7 +433,7 @@ class SnowflakeConn:
                         target_table=fq_table_name,
                         target_column=column_name,
                         metric_name="numeric_percentiles",
-                        metric_value=results["NUMERIC_PERCENTILES"],
+                        metric_value=json.loads(results["NUMERIC_PERCENTILES"]),
                         measured_at=measured_at,
                     )
                 )
@@ -477,7 +482,7 @@ class SnowflakeConn:
                             target_table=fq_table_name,
                             target_column=column_name,
                             metric_name="numeric_histogram",
-                            metric_value=results["NUMERIC_HISTOGRAM"],
+                            metric_value=json.loads(results["NUMERIC_HISTOGRAM"]),
                             measured_at=measured_at,
                         )
                     )
