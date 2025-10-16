@@ -72,9 +72,7 @@ class HistoryReport:
         elif tracker.chart_mode == ChartMode.NumericPercentiles:
             self._print_percentile_chart(tracker)
         elif tracker.chart_mode == ChartMode.NumericHistogram:
-            self._print_histogram_chart(tracker, 3)
-        elif tracker.chart_mode == ChartMode.DatetimeHistogram:
-            self._print_histogram_chart(tracker, 1)
+            self._print_histogram_chart(tracker)
         elif tracker.chart_mode == ChartMode.HasChanged:
             self._print_has_changed_chart(tracker)
 
@@ -144,11 +142,13 @@ class HistoryReport:
     #     chart.add_plot(ys)
     #     self._print_chart(chart.render())
 
-    def _print_histogram_chart(self, tracker: MetricTracker, expansion: int = 1):
+    def _print_histogram_chart(self, tracker: MetricTracker):
         """ estimates a histogram from the percentile values """
         val = tracker.get_current_value()
         if not val:
             return
+
+        expansion = max(1, 30 // len(val))
 
         ordered_values = [
             val[k]

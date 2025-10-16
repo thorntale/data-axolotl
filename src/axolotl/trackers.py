@@ -526,10 +526,4 @@ class NumericHistogram(NumericMetricTracker):
 
 
 class DatetimeHistogram(NumericHistogram):
-    chart_mode = ChartMode.DatetimeHistogram
-
-    # def get_single_delta(self, a, b) -> float | None:
-    #     d = super().get_single_delta(a, b)
-    #     if d is None:
-    #         return None
-    #     return d.total_seconds()
+    pass
