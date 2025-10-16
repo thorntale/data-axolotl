@@ -13,6 +13,7 @@ class Plot(NamedTuple):
     color: Optional[str]
     side: Literal["left", "right"]
     label_end: bool|str = False
+    bar_like: bool = False  # display as bars dropping to 0
 
 class Chars:
     LeftEnd='╶'
@@ -25,6 +26,7 @@ class Chars:
     VLine='│'
     # EndCircle='○'
     EndCircle='●'
+    BarBottom='╵'
 
 class Chart:
     def __init__(
@@ -52,6 +54,7 @@ class Chart:
         color='',
         side='left',
         label_end=False,
+        bar_like=False,
     ):
         if side != 'left' and label_end:
             raise TypeError('Cannot use label_end with side=right')
@@ -60,6 +63,7 @@ class Chart:
             color=color,
             side=side,
             label_end=label_end,
+            bar_like=bar_like,
         ))
 
     def render(self, height=10) -> str:
@@ -201,9 +205,23 @@ class Chart:
             if a is None and b is None:
                 pass
             elif a is None:
-                grid[by][x] = plot.color + Chars.LeftEnd + '\033[0m'
+                if plot.bar_like and b > 0:
+                    z = max(0, axis.get_y(0.0))
+                    grid[z][x] = plot.color + Chars.BarBottom + '\033[0m'
+                    for y in range(z + 1, by):
+                        grid[y][x] = plot.color + Chars.VLine + '\033[0m'
+                    grid[by][x] = plot.color + Chars.EndTop + '\033[0m'
+                else:
+                    grid[by][x] = plot.color + Chars.LeftEnd + '\033[0m'
             elif b is None:
-                grid[ay][x] = plot.color + Chars.RightEnd + '\033[0m'
+                if plot.bar_like and a > 0:
+                    z = max(0, axis.get_y(0.0))
+                    grid[z][x] = plot.color + Chars.BarBottom + '\033[0m'
+                    for y in range(z + 1, ay):
+                        grid[y][x] = plot.color + Chars.VLine + '\033[0m'
+                    grid[ay][x] = plot.color + Chars.StartTop + '\033[0m'
+                else:
+                    grid[ay][x] = plot.color + Chars.RightEnd + '\033[0m'
             elif ay == by:
                 grid[ay][x] = plot.color + Chars.HLine + '\033[0m'
             elif ay < by:
@@ -222,7 +240,8 @@ class Chart:
                 raise Exception('unexpected plot error')
 
             if ay is not None and x == len(plot.values):
-                grid[ay][x] = plot.color + Chars.EndCircle + '\033[0m'
+                if not plot.bar_like:
+                    grid[ay][x] = plot.color + Chars.EndCircle + '\033[0m'
                 if plot.label_end:
                     if plot.label_end is True:
                         label = self.format_label(a, 7)

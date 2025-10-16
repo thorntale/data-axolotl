@@ -441,30 +441,40 @@ class SnowflakeConn:
             print(f"Error running percentile query: {e}, {percentile_query}")
             raise e
 
-        approx_numeric_range = math.floor(
-            abs(query_values["numeric_max"] - query_values["numeric_min"])
-        )
-        if approx_numeric_range >= 1:
-            num_buckets = min(10, approx_numeric_range)
+        if query_values["numeric_max"] == query_values["numeric_min"]:
+            metrics.append(
+                Metric(
+                    run_id=self.run_id,
+                    target_table=fq_table_name,
+                    target_column=column_name,
+                    metric_name="numeric_histogram",
+                    metric_value={
+                        query_values["numeric_max"]: query_values["row_count"] - query_values["null_count"],
+                    },
+                    measured_at=query_values["_measured_at"],
+                )
+            )
+        else:
+            num_buckets = 10
             ## only run histograms if we have at least one bucket
             try:
                 histogram_query = f"""
                         WITH cte AS (
                             SELECT
-                                MIN({column_name}) AS {column_name}_MIN,
-                                MAX({column_name}) AS {column_name}_MAX,
-                                ({column_name}_MAX - {column_name}_MIN) / {num_buckets} AS BUCKET_SIZE
-                            FROM {fq_table_name}
+                                MIN(t."{column_name}") AS COL_MIN,
+                                MAX(t."{column_name}") AS COL_MAX,
+                                (COL_MAX - COL_MIN) / {num_buckets} AS BUCKET_SIZE
+                            FROM {fq_table_name} as t
                         ),
                         histogram_buckets AS (
                             SELECT
-                                WIDTH_BUCKET({column_name},
-                                    (SELECT {column_name}_MIN FROM cte),
-                                    (SELECT {column_name}_MAX FROM cte),
+                                LEAST(GREATEST(WIDTH_BUCKET(t."{column_name}",
+                                    (SELECT COL_MIN FROM cte),
+                                    (SELECT COL_MAX FROM cte),
                                     {num_buckets}
-                                ) * (SELECT BUCKET_SIZE FROM cte) as bucket,
+                                ), 1), {num_buckets}) * (SELECT BUCKET_SIZE FROM cte) + (select COL_MIN FROM cte) as bucket,
                                 COUNT(*) as count
-                            FROM {fq_table_name}
+                            FROM {fq_table_name} AS t
                             GROUP BY bucket
                         )
                         SELECT

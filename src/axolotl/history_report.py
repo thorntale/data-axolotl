@@ -13,6 +13,14 @@ from .trackers import ChartMode
 from .line_chart import Chart
 
 
+rainbow_colors = [
+    "\033[0;31m",
+    "\033[1;33m",
+    '\033[0;32m',
+    "\033[0;36m",
+    "\033[0;34m",
+]
+
 class HistoryReport:
     console = Console()
 
@@ -59,6 +67,8 @@ class HistoryReport:
                 self._print_numeric_chart(tracker)
         elif tracker.chart_mode == ChartMode.NumericPercentiles:
             self._print_percentile_chart(tracker)
+        elif tracker.chart_mode == ChartMode.NumericHistogram:
+            self._print_histogram_chart(tracker)
 
     def _print_numeric_chart(self, tracker: MetricTracker):
         chart = Chart(
@@ -75,7 +85,7 @@ class HistoryReport:
             [v.metric_value for v in tracker.values],
             label_end=True,
         )
-        self.console.print(Padding(Text.from_ansi(chart.render()), (0, 4)), highlight=False)
+        self._print_chart(chart.render())
 
     def _normalize_percentile_value(self, pcts: Optional[Dict[str, Any]]) -> Optional[Dict[int, Any]]:
         if not pcts:
@@ -92,11 +102,11 @@ class HistoryReport:
         ]
         # order matters here; later plots are drawn on top
         plot_keys_and_colors = {
-            50: '\033[0;32m',
-            10: "\033[1;33m",
-            90: "\033[0;36m",
-            0: "\033[0;31m",
-            100: "\033[0;34m",
+            50:  rainbow_colors[2],
+            10:  rainbow_colors[1],
+            90:  rainbow_colors[3],
+            0:   rainbow_colors[0],
+            100: rainbow_colors[4],
         }
         chart = Chart(
             # left_axis_title=tracker.pretty_name,
@@ -110,66 +120,48 @@ class HistoryReport:
                 color=color,
                 label_end=f"{key}p",
             )
-        self.console.print(Padding(Text.from_ansi(chart.render()), (0, 4)), highlight=False)
-        # self._print_percentile_histogram(tracker)
+        self._print_chart(chart.render())
         # self._print_percentile_curve(tracker)
 
-    def _print_percentile_curve(self, tracker: MetricTracker):
-        val = self._normalize_percentile_value(tracker.get_current_value())
-        if not val:
-            return
-        xs = range(0, 101, 2)
-        ys = [
-            max(((k, v) for k, v in val.items() if k <= pct), key=lambda t: t[0])[1]
-            for pct in xs
-        ]
-        chart = Chart()
-        chart.add_plot(ys)
-        self.console.print(Padding(Text.from_ansi(chart.render()), (0, 4)), highlight=False)
-        # self._print_percentile_histogram(tracker)
+    # def _print_percentile_curve(self, tracker: MetricTracker):
+    #     val = self._normalize_percentile_value(tracker.get_current_value())
+    #     if not val:
+    #         return
+    #     xs = range(0, 101, 2)
+    #     ys = [
+    #         max(((k, v) for k, v in val.items() if k <= pct), key=lambda t: t[0])[1]
+    #         for pct in xs
+    #     ]
+    #     chart = Chart()
+    #     chart.add_plot(ys)
+    #     self._print_chart(chart.render())
 
-    def _print_percentile_histogram(self, tracker: MetricTracker):
+    def _print_histogram_chart(self, tracker: MetricTracker):
         """ estimates a histogram from the percentile values """
-        val = self._normalize_percentile_value(tracker.get_current_value())
+        val = tracker.get_current_value()
         if not val:
             return
-        ranges = list(itertools.pairwise(sorted(val.keys())))
-        # it's possible for a bucket to be 0-width
-        #   ex: 0th percentile == 5th percentile
-        # so in that case we expand the bucket slightly.
-        min_possible_width = ((val[100] - val[0]) * 0.01) or 1
-        # tuples of (percent of rows, width of bucket)
-        quantity_and_widths = [
-            (100.0 * (end - start), max(min_possible_width, val[end] - val[start]))
-            for start, end in ranges
+
+        ordered_values = [
+            val[k]
+            for k in sorted(val.keys(), key=float)
+            for _ in range(0, 3)  # make bars wider
         ]
-        total_width = sum(w for q, w in quantity_and_widths)
-        height_and_widths = [
-            (q / w, w)
-            for q, w in quantity_and_widths
-        ]
-        max_height = max(h for h, w in height_and_widths)
 
         DISP_H = 10
-        DISP_W = 100
+        chart = Chart(include_zero=True)
+        chart.add_plot(ordered_values, bar_like=True)
+        self._print_chart(chart.render())
 
-        # y -> x -> char
-        grid = [
-            [' '] * (DISP_W + 10)
-            for y in range(0, DISP_H)
-        ]
-        left = 0
-        for _h, _w in height_and_widths:
-            h = round(_h / max_height * DISP_H)
-            w = round(_w / total_width * DISP_W)
-            for x in range(left, left + w):
-                for y in range(0, h):
-                    grid[y][x] = '#'
-            left += w
+    def _print_chart(self, chart_ansi):
+        self.console.print(
+            Padding(
+                Text.from_ansi(chart_ansi),
+                (0, 4),
+            ),
+            highlight=False,
+        )
 
-        print('Percentile Hist:')
-        print('\n'.join(''.join(row) for row in grid))
-        # print(val)
 
 def intersperse(arr, sep):
     result = [sep] * (len(arr) * 2 - 1)

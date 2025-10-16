@@ -120,8 +120,9 @@ class MetricSet:
             yield ts.NumericPercentiles(
                 self._get_metric_with_nulls(MetricKey(table, column, 'numeric_percentiles'))
             )
-            # TODO: numeric_histogram
-            # TODO: numeric_percentiles
+            yield ts.NumericHistogram(
+                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_histogram'))
+            )
 
         if data_type_simple == 'string':
             yield ts.AvgStringLength(

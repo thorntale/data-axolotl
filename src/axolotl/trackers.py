@@ -49,6 +49,7 @@ class AlertMethod(Enum):
 class ChartMode(Enum):
     Standard = 'Standard'
     NumericPercentiles = 'NumericPercentiles'
+    NumericHistogram = 'NumericHistogram'
 
 # The display value describing the alert change, ex `+10%` or `5.6std`
 type AlertingDelta = str
@@ -230,6 +231,8 @@ class NumericMetricTracker(MetricTracker):
     """ General purpose metric tracker for numeric metrics.
     Comes with a get_change_severity implementation """
     def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
+        if self.get_current_value() is None and self.get_prev_value() is None:
+            return (AlertSeverity.Unchanged, AlertMethod.ToFromNull, '==')
         if self.is_null_status_change():
             return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
         if z_alert := self.get_delta_z_alert():
@@ -248,6 +251,8 @@ class NumericMetricTracker(MetricTracker):
 
 class DatetimeMetricTracker(MetricTracker):
     def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
+        if self.get_current_value() is None and self.get_prev_value() is None:
+            return (AlertSeverity.Unchanged, AlertMethod.ToFromNull, '==')
         if self.is_null_status_change():
             return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
         if z_alert := self.get_delta_z_alert():
@@ -280,6 +285,8 @@ class PercentMetricTracker(NumericMetricTracker):
 class EqualityMetricTracker(MetricTracker):
     """ Alerts if the metric changes at all """
     def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
+        if self.get_current_value() is None and self.get_prev_value() is None:
+            return (AlertSeverity.Unchanged, AlertMethod.ToFromNull, '==')
         if self.is_null_status_change():
             return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
         if self.get_current_value() != self.get_prev_value():
@@ -464,6 +471,59 @@ class NumericPercentiles(NumericMetricTracker):
             return None
         return delta / span
 
-    # def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
-    #     # TODO
-    #     return (AlertSeverity.Changed, AlertMethod.Pct, 'TODO')
+class NumericHistogram(NumericMetricTracker):
+    pretty_name = 'Histogram'
+    description = 'Histogram of data distribution'
+    chart_mode = ChartMode.NumericHistogram
+
+    def value_formatter(self, value: Any) -> str:
+        # return str(len(value or []))
+        if value is None:
+            return super().value_formatter(value)
+        max_val = max(value.values())
+        sorted_keys = sorted(value.keys(), key=lambda k: float(k))
+        ys = [
+            math.floor(value[k] / (max_val or 1) * 5.0)
+            for k in sorted_keys
+        ]
+        return '⎹' + arr_to_dots(ys) + '⎸'
+
+    def get_single_delta(self, a, b) -> float | None:
+        """ Returns average change in percentile across all measured percentiles """
+        if a is None or b is None:
+            return None
+
+        def ordered_values(v):
+            return [
+                v[k] for k in sorted(v.keys(), key=float)
+            ]
+
+        return sum(
+            abs(va - vb)
+            for va, vb in itertools.zip_longest(
+                ordered_values(a),
+                ordered_values(b),
+                fillvalue=0,
+            )
+        )
+
+    def estimate_delta_pct(self) -> Optional[float]:
+        """
+        Computes (current - prev) / prev
+        Handles some special cases:
+        - if prev or current is None, returns None
+        - if prev == current == 0, returns 0
+        - if prev == 0, returns ±Infinity
+        - if prev or current is non-numeric, returns None
+        """
+        cur = self.get_current_value()
+        prev = self.get_prev_value()
+        delta = self.get_single_delta(prev, cur)
+        if delta is None:
+            return None
+        if delta == 0:
+            return 0
+        total = sum(prev.values())
+        if not total:
+            return None
+        return delta / total
