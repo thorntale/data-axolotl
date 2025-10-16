@@ -48,7 +48,7 @@ class StateDAO:
         self.table_prefix = table_prefix
         self.setup_db_tables()
 
-    def query(self, query_string: str, data: List[any] = []) -> List[List[any]]:
+    def query(self, query_string: str, data: List[Any] = []) -> List[List[Any]]:
         cursor = self.conn.cursor()
         result = cursor.execute(query_string, data)
         return result.fetchall()
@@ -110,7 +110,7 @@ class StateDAO:
         )
         return next_id
 
-    def _end_run(self, run_id: int, successful: bool) -> int:
+    def _end_run(self, run_id: int, successful: bool):
         p = self.table_prefix
         self.query(
             f"""
@@ -187,14 +187,14 @@ class StateDAO:
     def get_metrics(
         self,
         run_id: Optional[str] = None,
-        run_id_lte: Optional[str] = None,
+        run_id_lte: Optional[int] = None,
         only_successful: Optional[bool] = False,
         target_table: Optional[str] = None,
         target_column: Optional[str] = None,
     ) -> List[Metric]:
         p = self.table_prefix
         where_clause = ""
-        where_values = []
+        where_values: List[Any] = []
 
         if run_id is not None:
             where_clause += " AND run_id = ?"

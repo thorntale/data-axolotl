@@ -1,6 +1,10 @@
 from typing import NamedTuple, Optional
 from typing import List
 from typing import Literal
+from typing import Optional
+from typing import Tuple
+from typing import Generator
+from typing import Any
 from datetime import date
 from datetime import datetime
 import itertools
@@ -164,7 +168,7 @@ class Chart:
                 def get_y(self, value) -> int:
                     return height // 2
 
-                def get_labels(self) -> Tuple[int, Any]:
+                def get_labels(self) -> Generator[Tuple[int, Any]]:
                     yield (height // 2, max_value)
 
             return NoHeightAxis()
@@ -174,7 +178,7 @@ class Chart:
             def get_y(self, value) -> int:
                 return round((value - min_value) / (max_value - min_value) * (height - 1))
 
-            def get_labels(self) -> Tuple[int, Any]:
+            def get_labels(self) -> Generator[Tuple[int, Any]]:
                 mark_values = [min_value, max_value]
 
                 if include_zero:
@@ -199,6 +203,8 @@ class Chart:
         return Axis()
 
     def draw_plot(self, grid, plot, axis):
+        def color(c: str) -> str:
+            return plot.color + c + '\033[0m'
         for x, (a, b) in enumerate(itertools.pairwise([None, *plot.values, None])):
             ay = None if a is None else axis.get_y(a)
             by = None if b is None else axis.get_y(b)
@@ -207,47 +213,47 @@ class Chart:
             elif a is None:
                 if plot.bar_like and b > 0:
                     z = max(0, axis.get_y(0.0))
-                    grid[z][x] = plot.color + Chars.BarBottom + '\033[0m'
+                    grid[z][x] = color(Chars.BarBottom)
                     for y in range(z + 1, by):
-                        grid[y][x] = plot.color + Chars.VLine + '\033[0m'
-                    grid[by][x] = plot.color + Chars.EndTop + '\033[0m'
+                        grid[y][x] = color(Chars.VLine)
+                    grid[by][x] = color(Chars.EndTop)
                 else:
-                    grid[by][x] = plot.color + Chars.LeftEnd + '\033[0m'
+                    grid[by][x] = color(Chars.LeftEnd)
             elif b is None:
                 if plot.bar_like and a > 0:
                     z = max(0, axis.get_y(0.0))
-                    grid[z][x] = plot.color + Chars.BarBottom + '\033[0m'
+                    grid[z][x] = color(Chars.BarBottom)
                     for y in range(z + 1, ay):
-                        grid[y][x] = plot.color + Chars.VLine + '\033[0m'
-                    grid[ay][x] = plot.color + Chars.StartTop + '\033[0m'
+                        grid[y][x] = color(Chars.VLine)
+                    grid[ay][x] = color(Chars.StartTop)
                 else:
-                    grid[ay][x] = plot.color + Chars.RightEnd + '\033[0m'
+                    grid[ay][x] = color(Chars.RightEnd)
             elif ay == by:
-                grid[ay][x] = plot.color + Chars.HLine + '\033[0m'
+                grid[ay][x] = color(Chars.HLine)
             elif ay < by:
                 # going up
-                grid[ay][x] = plot.color + Chars.StartBottom + '\033[0m'
+                grid[ay][x] = color(Chars.StartBottom)
                 for y in range(ay + 1, by):
-                    grid[y][x] = plot.color + Chars.VLine + '\033[0m'
-                grid[by][x] = plot.color + Chars.EndTop + '\033[0m'
+                    grid[y][x] = color(Chars.VLine)
+                grid[by][x] = color(Chars.EndTop)
             elif ay > by:
                 # going down
-                grid[ay][x] = plot.color + Chars.StartTop + '\033[0m'
+                grid[ay][x] = color(Chars.StartTop)
                 for y in range(by + 1, ay):
-                    grid[y][x] = plot.color + Chars.VLine + '\033[0m'
-                grid[by][x] = plot.color + Chars.EndBottom + '\033[0m'
+                    grid[y][x] = color(Chars.VLine)
+                grid[by][x] = color(Chars.EndBottom)
             else:
                 raise Exception('unexpected plot error')
 
             if ay is not None and x == len(plot.values):
                 if not plot.bar_like:
-                    grid[ay][x] = plot.color + Chars.EndCircle + '\033[0m'
+                    grid[ay][x] = color(Chars.EndCircle)
                 if plot.label_end:
                     if plot.label_end is True:
                         label = self.format_label(a, 7)
                     else:
                         label = plot.label_end
-                    grid[ay].append(f" {plot.color}{label}\033[0m")
+                    grid[ay].append(f" {color(label)}")
 
     def format_label(self, v, max_len=5):
         suffix = ""

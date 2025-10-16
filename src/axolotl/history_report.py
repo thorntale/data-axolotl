@@ -1,5 +1,6 @@
 import re
 import itertools
+from typing import Optional, Any, Dict
 
 from rich.console import Console
 from rich.markup import escape
@@ -70,6 +71,8 @@ class HistoryReport:
             self._print_percentile_chart(tracker)
         elif tracker.chart_mode == ChartMode.NumericHistogram:
             self._print_histogram_chart(tracker)
+        elif tracker.chart_mode == ChartMode.HasChanged:
+            self._print_has_changed_chart(tracker)
 
     def _print_numeric_chart(self, tracker: MetricTracker):
         chart = Chart(
@@ -153,6 +156,20 @@ class HistoryReport:
         chart = Chart(include_zero=True)
         chart.add_plot(ordered_values, bar_like=True)
         self._print_chart(chart.render())
+
+    def _print_has_changed_chart(self, tracker: MetricTracker):
+        vals = [v.metric_value for v in tracker.values]
+        mode = [
+            ' ' if prev == curr == None else
+            '\033[2m○\033[0m' if prev == curr else
+            '●'
+            for prev, curr
+            in itertools.pairwise([None] + vals)
+        ]
+        self._print_chart(''
+            + "    Δ \033[2m╢ \033[0m" + ''.join(mode) + '\n'
+            + "      \033[2m╚═" + '═' * len(mode) + '\033[0m'
+        )
 
     def _print_chart(self, chart_ansi):
         self.console.print(

@@ -8,7 +8,7 @@ import os
 import re
 import tomllib
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Dict
 
 from .snowflake_connection import SnowflakeOptions
 
@@ -59,7 +59,7 @@ def _substitute_env_vars(value: Any) -> Any:
 
 
 def _parse_snowflake_connection(
-    conn_name: str, conn_config: dict[str, Any]
+    conn_name: str, conn_config: Dict[str, Any]
 ) -> SnowflakeOptions:
     """
     Parse a Snowflake connection configuration into a SnowflakeOptions object.
@@ -98,10 +98,10 @@ def _parse_snowflake_connection(
             f"'{conn_name}' must have either password or private key authentication configured"
         )
 
-    return SnowflakeOptions(**conn_config)
+    return SnowflakeOptions(**conn_config)  # type: ignore
 
 
-def _parse_metrics_config(metrics_config: dict[str, Any]) -> MetricsConfig:
+def _parse_metrics_config(metrics_config: Dict[str, Any]) -> MetricsConfig:
     """
     Parse a metrics configuration section.
 
