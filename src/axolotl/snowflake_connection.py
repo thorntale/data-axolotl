@@ -656,7 +656,7 @@ class SnowflakeConn:
                         run_id=self.run_id,
                         target_table=fq_table_name,
                         target_column=column_name,
-                        metric_name="numeric_histogram",
+                        metric_name="datetime_histogram",
                         metric_value=json.loads(results["NUMERIC_HISTOGRAM"]),
                         measured_at=measured_at,
                     )

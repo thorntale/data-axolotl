@@ -525,7 +525,17 @@ class NumericHistogram(NumericMetricTracker):
         return delta / total
 
 class DatetimeHistogram(NumericHistogram):
-    pass
+    """ Like numeric hist, but align buckets by key """
+    def get_single_delta(self, a, b) -> float | None:
+        """ Returns average absolute change in bucket quanitiy
+        across all measured buckets """
+        if a is None or b is None:
+            return None
+
+        return sum(
+            abs(a.get(k, 0) - b.get(k, 0))
+            for k in set(a.keys()) | set(b.keys())
+        )
 
 
 class TrueCount(NumericMetricTracker):

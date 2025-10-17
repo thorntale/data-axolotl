@@ -149,7 +149,7 @@ class MetricSet:
                 self._get_metric_with_nulls(MetricKey(table, column, 'numeric_min'))
             )
             yield ts.DatetimeHistogram(
-                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_histogram'))
+                self._get_metric_with_nulls(MetricKey(table, column, 'datetime_histogram'))
             )
 
         if data_type_simple == 'structured':
