@@ -8,8 +8,15 @@ from concurrent.futures import ThreadPoolExecutor
 import snowflake.connector
 from snowflake.connector import DictCursor
 
-from .config import SnowflakeOptions
+from .config import AxolotlConfig, SnowflakeOptions
 from .state_dao import Metric
+
+
+def to_string_array(items: List[str]) -> str:
+    """
+    takes ["a", "b", "c"] -> "('a', 'b', 'c')"
+    """
+    return f"""('{ "', '".join(items)}')"""
 
 
 class ColumnInfo(NamedTuple):
@@ -100,35 +107,75 @@ class SnowflakeConn:
     schema.
     """
 
-    def __init__(self, options: SnowflakeOptions, run_id: int):
-        self.database = options["database"]
+    def __init__(self, config: AxolotlConfig, connection_name: str, run_id: int):
+        """
+        Initialize a Snowflake connection.
 
-        ## fixme otpional etc.
-        self.include_schemas = options["include_schemas"]
-        self.exclude_schemas = options["exlude_schemas"]
+        Args:
+            config: AxolotlConfig object containing all configuration
+            connection_name: Name of the connection to use from config.connections
+            run_id: Unique identifier for this snapshot run
+        """
+        if connection_name not in config.connections:
+            raise ValueError(
+                f"Connection '{connection_name}' not found in config. "
+                f"Available connections: {list(config.connections.keys())}"
+            )
+
+        options = config.connections[connection_name]
+
+        self.database = options.database
+        self.include_schemas = options.include_schemas
+        self.exclude_schemas = options.exclude_schemas
 
         self.run_id = run_id
 
-        ## TODO actually do this
-        self.max_threads = options["metricsConfig"].max_threads
-        self.per_query_timeout_seconds = options[
-            "metricsConfig"
-        ].per_query_timeout_seconds
-        self.per_column_timeout_seconds = options[
-            "metricsConfig"
-        ].per_column_timeout_seconds
-        self.per_run_timeout_seconds = options["metricsConfig"].per_run_timeout_seconds
-        self.exclude_expensive_queries = options[
-            "metricsConfig"
-        ].exclude_expensive_queries
+        # Get metrics config (use connection-specific or default)
+        metrics_config = options.metricsConfig or config.default_metrics_config
+        self.max_threads = metrics_config.max_threads
+        self.per_query_timeout_seconds = metrics_config.per_query_timeout_seconds
+        self.per_column_timeout_seconds = metrics_config.per_column_timeout_seconds
+        self.per_run_timeout_seconds = metrics_config.per_run_timeout_seconds
+        self.exclude_expensive_queries = metrics_config.exclude_expensive_queries
+
+        # Prepare connection parameters for Snowflake connector
+        # Convert Pydantic model to dict and filter out custom fields
+        conn_params = options.model_dump(
+            exclude_none=True,
+            exclude={"metricsConfig", "type", "include_schemas", "exclude_schemas"},
+        )
+
+        # Handle private_key_file -> read and convert to private_key
+        if "private_key_file" in conn_params:
+            from cryptography.hazmat.backends import default_backend
+            from cryptography.hazmat.primitives import serialization
+
+            private_key_file = conn_params.pop("private_key_file")
+            private_key_pwd = conn_params.pop("private_key_file_pwd", None)
+
+            with open(private_key_file, "rb") as key_file:
+                private_key_data = key_file.read()
+
+            password_bytes = private_key_pwd.encode() if private_key_pwd else None
+
+            private_key = serialization.load_pem_private_key(
+                private_key_data, password=password_bytes, backend=default_backend()
+            )
+
+            pkb = private_key.private_bytes(
+                encoding=serialization.Encoding.DER,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            conn_params["private_key"] = pkb
 
         try:
-            self.conn = snowflake.connector.connect(**options)
+            self.conn = snowflake.connector.connect(**conn_params)
 
         except Exception as e:
             print(e)
-            ## FIXME: don't print passwords here
-            print(f"Failed to create snowflake connection: {options}")
+            # Don't print sensitive connection params
+            print(f"Failed to create snowflake connection: {connection_name}")
             raise e
 
     def __enter__(self):
@@ -162,11 +209,13 @@ class SnowflakeConn:
 
         yield metrics
 
-        all_column_infos = [
-            column_info
-            for table in table_names
-            for column_info in self.list_columns(table)
-        ]
+        # all_column_infos = [
+        #    column_info
+        #    for table in table_names
+        #    for column_info in self.list_columns(table)
+        # ]
+
+        all_column_infos = self.list_columns()
 
         print(f"Snapshotting {len(all_column_infos)} columns...")
 
@@ -643,30 +692,27 @@ class SnowflakeConn:
                 query_columns = self._common_queries(column_info)
                 return self._query_metrics(query_columns, column_info)
 
-    def list_columns(self, table_name: str) -> List[ColumnInfo]:
+    def list_columns(self) -> List[ColumnInfo]:
         """
-        List all columns in a table.
+        List all columns in a database, respecting included and excluded schemas
 
         Args:
-            table_name: Name of the table to list columns for
-
         Returns:
             ColumnInfo: all the information to scan the column
         """
         column_info_arr: List[ColumnInfo] = []
 
-        fq_table_name = f"{self.database}.{self.table_schema}.{table_name}"
+        # fq_table_name = f"{self.database}.{self.table_schema}.{table_name}"
         with self.conn.cursor() as cur:
             query = f"""
-                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, TABLE_SCHEMA, TABLE_NAME
                     FROM INFORMATION_SCHEMA.COLUMNS
                     WHERE TABLE_CATALOG = '{self.database}'
-                    AND TABLE_SCHEMA = '{self.table_schema}'
-                    AND TABLE_NAME = '{table_name}'
                 """
             cur.execute(query)
 
-            for column_name, data_type, is_nullable in cur:
+            for column_name, data_type, is_nullable, table_schema, table_name in cur:
+                fq_table_name = f"{self.database}.{table_schema}.{table_name}"
                 column_info_arr.append(
                     ColumnInfo(
                         fq_table_name=fq_table_name,
@@ -696,8 +742,35 @@ class SnowflakeConn:
         metrics = []
         table_names = []
         fq_table_names = []
-        g_measured_at = None
 
+        if len(self.include_schemas) > 0:
+            print(self.include_schemas)
+            table_schema_clause = (
+                f"AND TABLE_SCHEMA IN {to_string_array(self.include_schemas)}"
+            )
+        elif len(self.include_schemas) > 0:
+            table_schema_clause = (
+                f"AND TABLE_SCHEMA NOT IN {to_string_array(self.exclude_schemas)}"
+            )
+        else:
+            table_schema_clause = ""
+
+        print(
+            f"""
+                    SELECT
+                        TABLE_CATALOG,
+                        TABLE_SCHEMA,
+                        TABLE_NAME,
+                        ROW_COUNT,
+                        BYTES,
+                        CREATED,
+                        LAST_ALTERED,
+                        CURRENT_TIMESTAMP() as measured_at
+                    FROM INFORMATION_SCHEMA.TABLES
+                    WHERE TABLE_CATALOG = '{self.database}'
+                    {table_schema_clause};
+                """
+        )
         with self.conn.cursor() as cur:
             try:
                 cur.execute(
@@ -713,7 +786,7 @@ class SnowflakeConn:
                         CURRENT_TIMESTAMP() as measured_at
                     FROM INFORMATION_SCHEMA.TABLES
                     WHERE TABLE_CATALOG = '{self.database}'
-                    AND TABLE_SCHEMA = '{self.table_schema}';
+                    {table_schema_clause}';
                 """
                 )
 

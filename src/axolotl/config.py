@@ -1,63 +1,87 @@
 """Configuration parser for Axolotl.
 
-Reads TOML configuration files and produces AxolotlConfig objects.
+Reads YAML configuration files and produces AxolotlConfig objects.
 Supports environment variable substitution using $ENVVAR syntax.
 """
 
 import os
 import re
-import tomllib
+import yaml
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Optional
 
-from typing import NamedTuple, List, Tuple, TypedDict, NotRequired
+from pydantic import BaseModel, model_validator
 
 
-class MetricsConfig(NamedTuple):
+class MetricsConfig(BaseModel):
     """Configuration for metrics collection."""
 
-    max_threads: int
-    per_query_timeout_seconds: int
-    per_column_timeout_seconds: int
-    per_run_timeout_seconds: int
-    exclude_expensive_queries: bool
+    max_threads: int = 10
+    per_query_timeout_seconds: int = 60
+    per_column_timeout_seconds: int = 60
+    per_run_timeout_seconds: int = 300
+    exclude_expensive_queries: bool = False
 
 
-class SnowflakeOptions(TypedDict):
+class SnowflakeOptions(BaseModel):
+    """Configuration options for Snowflake connections."""
+
+    # Connection type
+    type: str = "snowflake"
+
     # Required fields
     user: str
     account: str
     database: str
     warehouse: str
 
-    #TODO make these mutually exclusive!
-    include_schemas: NotRequired[List[str]]
-    exclude_schemas: NotRequired[List[str]]
+    # Schema filtering (mutually exclusive)
+    include_schemas: Optional[list[str]] = None
+    exclude_schemas: Optional[list[str]] = None
 
     # Password authentication (mutually exclusive with private key auth)
-    password: NotRequired[str]
+    password: Optional[str] = None
 
     # Private key authentication (mutually exclusive with password)
-    private_key: NotRequired[bytes]
-    private_key_path: NotRequired[str]
-    private_key_passphrase: NotRequired[str]
+    private_key: Optional[bytes] = None
+    private_key_path: Optional[str] = None
+    private_key_passphrase: Optional[str] = None
+    private_key_file: Optional[str] = None
+    private_key_file_pwd: Optional[str] = None
 
     # Optional additional fields that can be passed to snowflake.connector.connect()
-    role: NotRequired[str]
-    authenticator: NotRequired[str]
-    session_parameters: NotRequired[dict]
-    timezone: NotRequired[str]
-    autocommit: NotRequired[bool]
-    client_session_keep_alive: NotRequired[bool]
-    validate_default_parameters: NotRequired[bool]
-    paramstyle: NotRequired[str]
-    application: NotRequired[str]
+    role: Optional[str] = None
+    authenticator: Optional[str] = None
+    session_parameters: Optional[dict] = None
+    timezone: Optional[str] = None
+    autocommit: Optional[bool] = None
+    client_session_keep_alive: Optional[bool] = None
+    validate_default_parameters: Optional[bool] = None
+    paramstyle: Optional[str] = None
+    application: Optional[str] = None
 
-    ## Metrics config for this database. If it's missing, use the default
-    metricsConfig: MetricsConfig
+    # Metrics config for this database. If it's missing, use the default
+    metricsConfig: Optional[MetricsConfig] = None
+
+    @model_validator(mode='after')
+    def validate_authentication(self):
+        """Validate that either password or private key authentication is configured."""
+        has_password = self.password is not None
+        has_private_key = (
+            self.private_key is not None
+            or self.private_key_file is not None
+            or self.private_key_path is not None
+        ) and self.authenticator == "SNOWFLAKE_JWT"
+
+        if not has_password and not has_private_key:
+            raise ValueError(
+                "Must have either password or private key authentication configured"
+            )
+
+        return self
 
 
-class AxolotlConfig(NamedTuple):
+class AxolotlConfig(BaseModel):
     """Top-level configuration for Axolotl."""
 
     connections: dict[str, SnowflakeOptions]
@@ -116,57 +140,20 @@ def _parse_snowflake_connection(
     Raises:
         ValueError: if a field is missing
     """
-    conn_type = conn_config.get("type")
-    if conn_type != "snowflake":
-        raise ValueError(
-            f"Expected type 'snowflake' but '{conn_name}' has unsupported type '{conn_type}'. "
-        )
-
-    # Required fields for SnowflakeOptions
-    required_fields = ["account", "user", "database", "warehouse"]
-    missing_fields = [field for field in required_fields if field not in conn_config]
-
-    if missing_fields:
-        raise ValueError(
-            f"Connection '{conn_name}' is missing required fields: {', '.join(missing_fields)}"
-        )
-
-    # Validate authentication method
-    has_password = "password" in conn_config
-    has_private_key = "private_key_file" in conn_config or "private_key" in conn_config
-
-    if not has_password and not has_private_key:
-        raise ValueError(
-            f"'{conn_name}' must have either password or private key authentication configured"
-        )
-
     # Use connection-specific metrics if available, otherwise use default
     metrics_config = default_metrics_config
     if connection_specific_metrics:
-        metrics_config = _parse_metrics_config(connection_specific_metrics)
+        metrics_config = MetricsConfig(**connection_specific_metrics)
 
     # Create SnowflakeOptions with metricsConfig field
-    return SnowflakeOptions(**conn_config, metricsConfig=metrics_config)
-
-
-def _parse_metrics_config(metrics_config: dict[str, Any]) -> MetricsConfig:
-    """
-    Parse a metrics config section, with defaults, from a dictionary
-    """
-    return MetricsConfig(
-        max_threads=metrics_config.get("max_threads", 10),
-        per_query_timeout_seconds=metrics_config.get("per_query_timeout_seconds", 10),
-        per_column_timeout_seconds=metrics_config.get("per_column_timeout_seconds", 60),
-        per_run_timeout_seconds=metrics_config.get("per_run_timeout_seconds", 60 * 5),
-        exclude_expensive_queries=metrics_config.get(
-            "exclude_expensive_queries", False
-        ),
-    )
+    # Pydantic will validate required fields and authentication
+    conn_config_with_metrics = {**conn_config, "metricsConfig": metrics_config}
+    return SnowflakeOptions(**conn_config_with_metrics)
 
 
 def parse_config(config_path: str | Path) -> AxolotlConfig:
     """
-    parse a TOML configuration file to an AxolotlConfig.
+    Parse a YAML configuration file to an AxolotlConfig.
 
     Args:
         config_path: Path to the config
@@ -184,9 +171,9 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     if not config_path.exists():
         raise FileNotFoundError(f"Configfile not found: {config_path}")
 
-    # Read and parse TOML file
-    with open(config_path, "rb") as f:
-        raw_config = tomllib.load(f)
+    # Read and parse YAML file
+    with open(config_path, "r") as f:
+        raw_config = yaml.safe_load(f)
 
     # Substitute environment variables throughout the config
     config = _substitute_env_vars(raw_config)
@@ -194,17 +181,18 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     # Parse default metrics configuration first
     metrics_section = config.get("metrics", {})
 
-    # Extract default metrics, but exclude dicts
+    # Extract default metrics, but exclude dicts (those are connection-specific overrides)
     default_metrics_dict = {
         k: v for k, v in metrics_section.items() if not isinstance(v, dict)
     }
-    default_metrics_config = _parse_metrics_config(default_metrics_dict)
+    default_metrics_config = MetricsConfig(**default_metrics_dict)
 
-    ## TODO: later, support conn types that aren't snowflake
+    # TODO: later, support conn types that aren't snowflake
     connections: dict[str, SnowflakeOptions] = {}
     connections_section = config.get("connections", {})
     for conn_name, conn_config in connections_section.items():
-        if conn_config["type"] == "snowflake":
+        conn_type = conn_config.get("type", "snowflake")
+        if conn_type == "snowflake":
             # Check if there's a connection-specific metrics override in metrics.<conn_name>
             connection_specific_metrics = metrics_section.get(conn_name)
             connections[conn_name] = _parse_snowflake_connection(
@@ -214,7 +202,7 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
                 connection_specific_metrics,
             )
         else:
-            raise ValueError(f"Invalid connection type {conn_config["type"]}")
+            raise ValueError(f"Invalid connection type {conn_type}")
 
     return AxolotlConfig(
         connections=connections,
@@ -222,15 +210,15 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     )
 
 
-def load_config(config_path: str | Path = "conf/config.toml") -> AxolotlConfig:
+def load_config(config_path: str | Path = "conf/config.yaml") -> AxolotlConfig:
     """
     Load configuration from a file with a convenient default path.
 
     This is a convenience wrapper around parse_config that uses a default
-    configuration file path of "config.toml" in the current directory.
+    configuration file path of "conf/config.yaml" in the current directory.
 
     Args:
-        config_path: Path to the TOML configuration file (default: "config.toml")
+        config_path: Path to the YAML configuration file (default: "conf/config.yaml")
 
     Returns:
         AxolotlConfig object containing all parsed configuration

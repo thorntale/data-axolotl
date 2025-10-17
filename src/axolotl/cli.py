@@ -6,10 +6,7 @@ from tabulate import tabulate
 from .state_connection import (
     get_conn,
 )
-from .snowflake_connection import (
-    SnowflakeConn,
-    SnowflakeOptions,
-)
+from .snowflake_connection import SnowflakeConn
 from .state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
@@ -36,8 +33,8 @@ def run(
     with state.make_run() as run_id:
         typer.echo(f"Running {run_id}...")
 
-        for name, options in config.connections.items():
-            with SnowflakeConn(options, run_id) as snowflake_conn:
+        for name in config.connections.keys():
+            with SnowflakeConn(config, name, run_id) as snowflake_conn:
                 for metric_list in snowflake_conn.snapshot():
                     for m in metric_list:
                         try:
