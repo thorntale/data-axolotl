@@ -711,7 +711,7 @@ class SnowflakeConn:
             table_schema_clause = (
                 f"AND TABLE_SCHEMA IN {to_string_array(self.include_schemas)}"
             )
-        elif len(self.include_schemas) > 0:
+        elif len(self.exclude_schemas) > 0:
             table_schema_clause = (
                 f"AND TABLE_SCHEMA NOT IN {to_string_array(self.exclude_schemas)}"
             )
@@ -766,7 +766,7 @@ class SnowflakeConn:
             table_schema_clause = (
                 f"AND TABLE_SCHEMA IN {to_string_array(self.include_schemas)}"
             )
-        elif len(self.include_schemas) > 0:
+        elif len(self.exclude_schemas) > 0:
             table_schema_clause = (
                 f"AND TABLE_SCHEMA NOT IN {to_string_array(self.exclude_schemas)}"
             )

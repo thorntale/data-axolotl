@@ -36,8 +36,8 @@ class SnowflakeOptions(BaseModel):
     warehouse: str
 
     # Schema filtering (mutually exclusive)
-    include_schemas: Optional[list[str]] = None
-    exclude_schemas: Optional[list[str]] = None
+    include_schemas: Optional[list[str]] = []
+    exclude_schemas: Optional[list[str]] = ['INFORMATION_SCHEMA']
 
     # Password authentication (mutually exclusive with private key auth)
     password: Optional[str] = None

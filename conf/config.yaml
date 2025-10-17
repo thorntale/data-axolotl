@@ -15,7 +15,7 @@ metrics:
     exclude_expensive_queries: false
 
 connections:
-  sasquatch:
+  sample:
     type: snowflake
     # If the type is snowflake, this matches snowflake's connection.toml entries
     account: IGQTQKI-QK48619
@@ -31,6 +31,25 @@ connections:
     # schema: TPCH_SF10
     include_schemas:
       - TPCH_SF10
-      - TPCH_SF100
-    exclude_schemas:
-      - TPCH_SF1000
+      - TPCH_SF1
+
+  climate:
+    type: snowflake
+    # If the type is snowflake, this matches snowflake's connection.toml entries
+    account: IGQTQKI-QK48619
+    user: fred_the_sasquatch_ro
+    # $ENVVAR is the syntax to get from environment variable
+    # password: $SASQUATCH_PASSWORD
+    authenticator: SNOWFLAKE_JWT
+    private_key_file: conf/rsa_key_snowflake.p8
+    private_key_file_pwd: $SNOWFLAKE_PRIVATE_KEY_PASSWORD
+    warehouse: COMPUTE_WH
+    database: GLOBAL_WEATHER__CLIMATE_DATA_FOR_BI
+    # TODO: make this optional
+    # schema: TPCH_SF10
+    #include_schemas:
+    #  - TPCH_SF10
+    #  - TPCH_SF100
+
+    #exclude_schemas:
+    #  - TPCH_SF1000
