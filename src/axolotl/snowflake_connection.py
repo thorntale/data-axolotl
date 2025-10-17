@@ -1,5 +1,6 @@
 import time
 import json
+import traceback
 
 from typing import NamedTuple, List, Tuple, TypedDict, NotRequired
 from collections.abc import Iterator
@@ -172,11 +173,11 @@ class SnowflakeConn:
         try:
             self.conn = snowflake.connector.connect(**conn_params)
 
-        except Exception as e:
-            print(e)
+        except Exception:
             # Don't print sensitive connection params
             print(f"Failed to create snowflake connection: {connection_name}")
-            raise e
+            print(traceback.format_exc())
+            raise
 
     def __enter__(self):
         return self
@@ -306,10 +307,10 @@ class SnowflakeConn:
                 # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
 
-            except Exception as e:
-                print(e)
-                print(query)
-                raise e
+            except Exception:
+                print(f"Error executing query: {query}")
+                print(traceback.format_exc())
+                raise
             res = results
             # for metric_name, metric_value in results.items():
             #    res[metric_name] = metric_value
@@ -348,10 +349,10 @@ class SnowflakeConn:
 
                 # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
-            except Exception as e:
-                print(e)
-                print(query)
-                raise e
+            except Exception:
+                print(f"Error executing query: {query}")
+                print(traceback.format_exc())
+                raise
 
             for metric_name, metric_value in results.items():
                 if metric_name.startswith("_"):
@@ -380,7 +381,7 @@ class SnowflakeConn:
         data_type_simple = get_simple_data_type(data_type)
 
         if data_type_simple != "string" and data_type_simple != "boolean":
-            raise f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean"
+            raise ValueError(f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean")
 
         col_sql = f'c."{column_name}"'
         query_columns = self._common_queries(column_info)
@@ -476,9 +477,10 @@ class SnowflakeConn:
                         measured_at=measured_at,
                     )
                 )
-        except Exception as e:
-            print(f"Error running percentile query: {e}, {percentile_query}")
-            raise e
+        except Exception:
+            print(f"Error running percentile query: {percentile_query}")
+            print(traceback.format_exc())
+            raise
 
         if query_values["numeric_max"] == query_values["numeric_min"]:
             metrics.append(
@@ -536,9 +538,10 @@ class SnowflakeConn:
                             measured_at=measured_at,
                         )
                     )
-            except Exception as e:
-                print(f"Error running histogram query: {e}, {histogram_query}")
-                raise e
+            except Exception:
+                print(f"Error running histogram query: {histogram_query}")
+                print(traceback.format_exc())
+                raise
 
         return metrics
 
@@ -654,9 +657,10 @@ class SnowflakeConn:
                         measured_at=measured_at,
                     )
                 )
-        except Exception as e:
-            print(f"Error running datetime histogram query: {e}, {histogram_query}")
-            raise e
+        except Exception:
+            print(f"Error running datetime histogram query: {histogram_query}")
+            print(traceback.format_exc())
+            raise
 
         return metrics
 
@@ -702,12 +706,26 @@ class SnowflakeConn:
         """
         column_info_arr: List[ColumnInfo] = []
 
+        if len(self.include_schemas) > 0:
+            print(self.include_schemas)
+            table_schema_clause = (
+                f"AND TABLE_SCHEMA IN {to_string_array(self.include_schemas)}"
+            )
+        elif len(self.include_schemas) > 0:
+            table_schema_clause = (
+                f"AND TABLE_SCHEMA NOT IN {to_string_array(self.exclude_schemas)}"
+            )
+        else:
+            table_schema_clause = ""
+
+
         # fq_table_name = f"{self.database}.{self.table_schema}.{table_name}"
         with self.conn.cursor() as cur:
             query = f"""
                 SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, TABLE_SCHEMA, TABLE_NAME
                     FROM INFORMATION_SCHEMA.COLUMNS
                     WHERE TABLE_CATALOG = '{self.database}'
+                    {table_schema_clause}
                 """
             cur.execute(query)
 
@@ -786,13 +804,14 @@ class SnowflakeConn:
                         CURRENT_TIMESTAMP() as measured_at
                     FROM INFORMATION_SCHEMA.TABLES
                     WHERE TABLE_CATALOG = '{self.database}'
-                    {table_schema_clause}';
+                    {table_schema_clause};
                 """
                 )
 
-            except Exception as e:
-                print(f"Error running table: {e}")
-                raise e
+            except Exception:
+                print("Error running table scan query")
+                print(traceback.format_exc())
+                raise
 
             for (
                 table_catalog,
@@ -855,9 +874,10 @@ class SnowflakeConn:
                 """
                 )
                 results = cur.fetchone()
-            except Exception as e:
-                print(f"Error getting table update times: {e}")
-                raise e
+            except Exception:
+                print("Error getting table update times")
+                print(traceback.format_exc())
+                raise
 
             metrics += [
                 Metric(
