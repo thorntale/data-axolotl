@@ -88,12 +88,13 @@ class MetricSet:
             col_data_type_simples,
         )
 
-        yield ts.DistinctCount(
-            self._get_metric_with_nulls(MetricKey(table, column, 'distinct_count'))
-        )
-        yield ts.DistinctRate(
-            self._get_metric_with_nulls(MetricKey(table, column, 'distinct_rate'))
-        )
+        if data_type_simple != 'boolean':
+            yield ts.DistinctCount(
+                self._get_metric_with_nulls(MetricKey(table, column, 'distinct_count'))
+            )
+            yield ts.DistinctRate(
+                self._get_metric_with_nulls(MetricKey(table, column, 'distinct_rate'))
+            )
         yield ts.NullCount(
             self._get_metric_with_nulls(MetricKey(table, column, 'null_count'))
         )
@@ -102,7 +103,18 @@ class MetricSet:
         )
 
         if data_type_simple == 'boolean':
-            pass # TODO
+            yield ts.TrueCount(
+                self._get_metric_with_nulls(MetricKey(table, column, 'true_count'))
+            )
+            yield ts.FalseCount(
+                self._get_metric_with_nulls(MetricKey(table, column, 'false_count'))
+            )
+            yield ts.BooleanRate(
+                derived_metrics.boolean_rate(
+                    self._get_metric_with_nulls(MetricKey(table, column, 'true_count')),
+                    self._get_metric_with_nulls(MetricKey(table, column, 'false_count')),
+                )
+            )
 
         if data_type_simple == 'numeric':
             yield ts.Min(

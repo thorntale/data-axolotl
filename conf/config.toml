@@ -23,7 +23,7 @@ private_key_file = "conf/rsa_key_snowflake.p8"
 private_key_file_pwd = "$SNOWFLAKE_PRIVATE_KEY_PASSWORD"
 
 warehouse = "COMPUTE_WH"
-database = "SNOWFLAKE_SAMPLE_DATA"
+database = "TEMPLATE_DATA"
 
 ## TODO: make this optional
-schema = "TPCH_SF10"
+schema = "DEMO_DATA"

@@ -240,15 +240,15 @@ class NumericMetricTracker(MetricTracker):
             return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
         if z_alert := self.get_delta_z_alert():
             return z_alert
-        dpct = self.estimate_delta_pct()
+        dpct = 100 * self.estimate_delta_pct()
         if dpct is not None:
-            if abs(dpct) > 0.2:
+            if abs(dpct) > 20:
                 return (AlertSeverity.Major, AlertMethod.Pct, f"{dpct:+.0f}%")
-            if abs(dpct) > 0.05:
+            if abs(dpct) > 5:
                 return (AlertSeverity.Minor, AlertMethod.Pct, f"{dpct:+.0f}%")
-            if abs(dpct) > 0.0:
+            if abs(dpct) > 0:
                 return (AlertSeverity.Changed, AlertMethod.Pct, f"{dpct:+.0f}%")
-            return (AlertSeverity.Unchanged, AlertMethod.Pct, f"{dpct:+.0f}%")
+            return (AlertSeverity.Unchanged, AlertMethod.Pct, f"==")
         # probably unreachable
         return (AlertSeverity.Major, AlertMethod.Changed, '!=')
 
@@ -524,6 +524,18 @@ class NumericHistogram(NumericMetricTracker):
             return None
         return delta / total
 
-
 class DatetimeHistogram(NumericHistogram):
     pass
+
+
+class TrueCount(NumericMetricTracker):
+    pretty_name = 'True Count'
+    description = 'Number of rows that are true'
+
+class FalseCount(NumericMetricTracker):
+    pretty_name = 'False Count'
+    description = 'Number of rows that are false'
+
+class BooleanRate(PercentMetricTracker):
+    pretty_name = 'True Rate'
+    description = 'True count / (true count + false count). Ignores nulls.'

@@ -59,9 +59,9 @@ class HistoryReport:
     def _print_tracker(self, tracker: MetricTracker):
         self.console.print(Padding(
             f"{tracker.pretty_name}: [bright_green]{tracker.value_formatter(tracker.get_current_value())}[/bright_green]\n"
-            f"[dim]{tracker.description}",
+            f"  [dim]{tracker.description}",
             (0, 2),
-        ))
+        ), highlight=False)
         if tracker.chart_mode == ChartMode.Standard:
             if all(
                 v.metric_value is None
