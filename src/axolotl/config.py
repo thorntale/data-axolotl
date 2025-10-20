@@ -37,7 +37,7 @@ class SnowflakeOptions(BaseModel):
 
     # Schema filtering (mutually exclusive)
     include_schemas: Optional[list[str]] = []
-    exclude_schemas: Optional[list[str]] = ['INFORMATION_SCHEMA']
+    exclude_schemas: Optional[list[str]] = ["INFORMATION_SCHEMA"]
 
     # Password authentication (mutually exclusive with private key auth)
     password: Optional[str] = None
@@ -63,7 +63,7 @@ class SnowflakeOptions(BaseModel):
     # Metrics config for this database. If it's missing, use the default
     metricsConfig: Optional[MetricsConfig] = None
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_authentication(self):
         """Validate that either password or private key authentication is configured."""
         has_password = self.password is not None

@@ -139,6 +139,7 @@ class SnowflakeConn:
         self.per_run_timeout_seconds = metrics_config.per_run_timeout_seconds
         self.exclude_expensive_queries = metrics_config.exclude_expensive_queries
 
+
         # Prepare connection parameters for Snowflake connector
         # Convert Pydantic model to dict and filter out custom fields
         conn_params = options.model_dump(
@@ -209,12 +210,6 @@ class SnowflakeConn:
         )
 
         yield metrics
-
-        # all_column_infos = [
-        #    column_info
-        #    for table in table_names
-        #    for column_info in self.list_columns(table)
-        # ]
 
         all_column_infos = self.list_columns()
 
@@ -317,6 +312,7 @@ class SnowflakeConn:
 
         return res
 
+
     def _query_metrics(
         self, query_columns: dict[str, str], column_info: ColumnInfo
     ) -> List[Metric]:
@@ -381,7 +377,9 @@ class SnowflakeConn:
         data_type_simple = get_simple_data_type(data_type)
 
         if data_type_simple != "string" and data_type_simple != "boolean":
-            raise ValueError(f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean")
+            raise ValueError(
+                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean"
+            )
 
         col_sql = f'c."{column_name}"'
         query_columns = self._common_queries(column_info)
@@ -399,9 +397,12 @@ class SnowflakeConn:
                     "false_count": f"COUNT_IF({col_sql} = FALSE)",
                 }
             )
+
         return self._query_metrics(query_columns, column_info)
 
-    def scan_numeric_column(self, column_info: ColumnInfo) -> List[Metric]:
+    def scan_numeric_column(
+        self, column_info: ColumnInfo, simple_queries_only: bool = True
+    ) -> List[Metric]:
         """
         Scan a single column of Numeric type. This involves simple stats as well
         as histograms and percentiles.
@@ -717,7 +718,6 @@ class SnowflakeConn:
             )
         else:
             table_schema_clause = ""
-
 
         # fq_table_name = f"{self.database}.{self.table_schema}.{table_name}"
         with self.conn.cursor() as cur:
