@@ -8,7 +8,7 @@ import os
 import re
 import yaml
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, model_validator
 

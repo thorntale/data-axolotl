@@ -1,5 +1,6 @@
 import re
 import itertools
+from typing import Optional, Any, Dict
 
 from rich.console import Console
 from rich.markup import escape
@@ -8,6 +9,7 @@ from rich.padding import Padding
 from rich.text import Text
 
 from .display_utils import pretty_table_name
+from .display_utils import maybe_float
 from .trackers import MetricTracker
 from .trackers import ChartMode
 from .line_chart import Chart
@@ -56,9 +58,10 @@ class HistoryReport:
 
     def _print_tracker(self, tracker: MetricTracker):
         self.console.print(Padding(
-            f"{tracker.pretty_name}: [bright_green]{tracker.value_formatter(tracker.get_current_value())}",
+            f"{tracker.pretty_name}: [bright_green]{tracker.value_formatter(tracker.get_current_value())}[/bright_green]\n"
+            f"  [dim]{tracker.description}",
             (0, 2),
-        ))
+        ), highlight=False)
         if tracker.chart_mode == ChartMode.Standard:
             if all(
                 v.metric_value is None
@@ -70,6 +73,8 @@ class HistoryReport:
             self._print_percentile_chart(tracker)
         elif tracker.chart_mode == ChartMode.NumericHistogram:
             self._print_histogram_chart(tracker)
+        elif tracker.chart_mode == ChartMode.HasChanged:
+            self._print_has_changed_chart(tracker)
 
     def _print_numeric_chart(self, tracker: MetricTracker):
         chart = Chart(
@@ -143,16 +148,32 @@ class HistoryReport:
         if not val:
             return
 
+        expansion = max(1, 30 // len(val))
+
         ordered_values = [
             val[k]
-            for k in sorted(val.keys(), key=float)
-            for _ in range(0, 3)  # make bars wider
+            for k in sorted(val.keys(), key=maybe_float)
+            for _ in range(0, expansion)  # make bars wider
         ]
 
         DISP_H = 10
         chart = Chart(include_zero=True)
         chart.add_plot(ordered_values, bar_like=True)
         self._print_chart(chart.render())
+
+    def _print_has_changed_chart(self, tracker: MetricTracker):
+        vals = [v.metric_value for v in tracker.values]
+        mode = [
+            ' ' if prev == curr == None else
+            '\033[2m○\033[0m' if prev == curr else
+            '●'
+            for prev, curr
+            in itertools.pairwise([None] + vals)
+        ]
+        self._print_chart(''
+            + "    Δ \033[2m╢ \033[0m" + ''.join(mode) + '\n'
+            + "      \033[2m╚═" + '═' * len(mode) + '\033[0m'
+        )
 
     def _print_chart(self, chart_ansi):
         self.console.print(

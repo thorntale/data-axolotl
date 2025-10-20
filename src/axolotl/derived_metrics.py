@@ -33,3 +33,19 @@ def data_type_simple(data_type_metrics: List[Metric]) -> List[Metric]:
         )
         for v in data_type_metrics
     ]
+
+def boolean_rate(true_count_metrics: List[Metric], false_count_metrics: List[Metric]) -> List[Metric]:
+    return [
+        t._replace(
+            metric_name='boolean_rate',
+            metric_value=(
+                # give null if both are null
+                None if t.metric_value == f.metric_value == None else
+                # give 50 if both are 0
+                50.0 if (t.metric_value or 0) == (f.metric_value or 0) == 0 else
+                # else give 100 * t / (t + f)
+                100.0 * (t.metric_value or 0) / ((t.metric_value or 0) + (f.metric_value or 0))
+            )
+        )
+        for t, f in zip(true_count_metrics, false_count_metrics)
+    ]

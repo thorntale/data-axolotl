@@ -1,4 +1,5 @@
 from typing import Optional
+from typing import List
 from typing_extensions import Annotated
 
 import typer
@@ -96,11 +97,11 @@ def rm_run(id: int):
 
 @app.command()
 def report(
-    target: Annotated[Optional[str], typer.Argument(
+    target: Annotated[List[str], typer.Argument(
         help="""
             Generate a report for only matching objects. Supports: db, db.schema, db.schema.table, db.schema.table.column
         """
-    )] = '',
+    )] = [],
     run_id: Annotated[
         Optional[int],
         typer.Option(
@@ -138,7 +139,7 @@ def report(
         if r.successful and r.run_id <= run_id
     ]
 
-    filters = [t for t in target.split() if t]
+    filters = [t for t in target if t]
     metrics = [
         m for m in state.get_metrics(
             run_id_lte=run_id,

@@ -1,4 +1,4 @@
-from typing import Set, Optional, NamedTuple, Tuple, List
+from typing import Set, Optional, NamedTuple, Tuple, List, Generator
 # from typing import override
 from enum import Enum
 import itertools
@@ -44,7 +44,7 @@ class MetricSet:
                 and (table is None or table == k.target_table)
         }
 
-    def get_metric_trackers_for_table(self, table: str) -> List[MetricTracker]:
+    def get_metric_trackers_for_table(self, table: str) -> Generator[MetricTracker]:
         # We might list a table because there are column metrics within it, but
         # not track any table metrics. In that case, skip its metrics.
         if not any(
@@ -75,7 +75,7 @@ class MetricSet:
             ),
         )
 
-    def get_metric_trackers_for_column(self, table: str, column: str) -> List[MetricTracker]:
+    def get_metric_trackers_for_column(self, table: str, column: str) -> Generator[MetricTracker]:
         col_data_types = self._get_metric_with_nulls(MetricKey(table, column, 'data_type'))
         col_data_type_simples = derived_metrics.data_type_simple(col_data_types)
 
@@ -88,12 +88,13 @@ class MetricSet:
             col_data_type_simples,
         )
 
-        yield ts.DistinctCount(
-            self._get_metric_with_nulls(MetricKey(table, column, 'distinct_count'))
-        )
-        yield ts.DistinctRate(
-            self._get_metric_with_nulls(MetricKey(table, column, 'distinct_rate'))
-        )
+        if data_type_simple != 'boolean':
+            yield ts.DistinctCount(
+                self._get_metric_with_nulls(MetricKey(table, column, 'distinct_count'))
+            )
+            yield ts.DistinctRate(
+                self._get_metric_with_nulls(MetricKey(table, column, 'distinct_rate'))
+            )
         yield ts.NullCount(
             self._get_metric_with_nulls(MetricKey(table, column, 'null_count'))
         )
@@ -102,7 +103,18 @@ class MetricSet:
         )
 
         if data_type_simple == 'boolean':
-            pass # TODO
+            yield ts.TrueCount(
+                self._get_metric_with_nulls(MetricKey(table, column, 'true_count'))
+            )
+            yield ts.FalseCount(
+                self._get_metric_with_nulls(MetricKey(table, column, 'false_count'))
+            )
+            yield ts.BooleanRate(
+                derived_metrics.boolean_rate(
+                    self._get_metric_with_nulls(MetricKey(table, column, 'true_count')),
+                    self._get_metric_with_nulls(MetricKey(table, column, 'false_count')),
+                )
+            )
 
         if data_type_simple == 'numeric':
             yield ts.Min(
@@ -136,8 +148,9 @@ class MetricSet:
             yield ts.MaxTS(
                 self._get_metric_with_nulls(MetricKey(table, column, 'numeric_min'))
             )
-            # TODO: numeric_histogram
-            # TODO: numeric_percentiles
+            yield ts.DatetimeHistogram(
+                self._get_metric_with_nulls(MetricKey(table, column, 'datetime_histogram'))
+            )
 
         if data_type_simple == 'structured':
             pass # TODO
@@ -149,7 +162,7 @@ class MetricSet:
             pass # TODO
 
     def get_all_alerts(self) -> List[MetricAlert]:
-        trackers = []
+        trackers: List[MetricTracker] = []
 
         for t in self.get_tracked_tables():
             trackers += self.get_metric_trackers_for_table(t)

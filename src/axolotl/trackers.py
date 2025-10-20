@@ -12,6 +12,7 @@ from statistics import stdev
 
 import humanize
 
+from .display_utils import maybe_float
 from .state_dao import Metric
 from .line_chart import arr_to_dots
 
@@ -48,8 +49,10 @@ class AlertMethod(Enum):
 
 class ChartMode(Enum):
     Standard = 'Standard'
+    HasChanged = 'HasChanged'
     NumericPercentiles = 'NumericPercentiles'
     NumericHistogram = 'NumericHistogram'
+    DatetimeHistogram = 'DatetimeHistogram'
 
 # The display value describing the alert change, ex `+10%` or `5.6std`
 type AlertingDelta = str
@@ -130,7 +133,7 @@ class MetricTracker(ABC):
             return None
         return deltas[-1]
 
-    def get_all_detlas(self) -> List[float]:
+    def get_all_detlas(self) -> List[float|None]:
         """ Returns a list of all delta, in order, for numeric types """
         return [
             self.get_single_delta(a, b)
@@ -237,15 +240,15 @@ class NumericMetricTracker(MetricTracker):
             return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
         if z_alert := self.get_delta_z_alert():
             return z_alert
-        dpct = self.estimate_delta_pct()
+        dpct = 100 * self.estimate_delta_pct()
         if dpct is not None:
-            if abs(dpct) > 0.2:
+            if abs(dpct) > 20:
                 return (AlertSeverity.Major, AlertMethod.Pct, f"{dpct:+.0f}%")
-            if abs(dpct) > 0.05:
+            if abs(dpct) > 5:
                 return (AlertSeverity.Minor, AlertMethod.Pct, f"{dpct:+.0f}%")
-            if abs(dpct) > 0.0:
+            if abs(dpct) > 0:
                 return (AlertSeverity.Changed, AlertMethod.Pct, f"{dpct:+.0f}%")
-            return (AlertSeverity.Unchanged, AlertMethod.Pct, f"{dpct:+.0f}%")
+            return (AlertSeverity.Unchanged, AlertMethod.Pct, f"==")
         # probably unreachable
         return (AlertSeverity.Major, AlertMethod.Changed, '!=')
 
@@ -314,14 +317,17 @@ class TableRowCountTracker(NumericMetricTracker):
 class TableCreateTimeTracker(EqualityMetricTracker):
     pretty_name = "Creation Time"
     description = "Time the table was last created."
+    chart_mode = ChartMode.HasChanged
 
 class TableAlterTimeTracker(EqualityMetricTracker):
     pretty_name = "Last Altered Time"
     description = "Time the table structure was last altered."
+    chart_mode = ChartMode.HasChanged
 
 class TableUpdateTimeTracker(MetricTracker):
     pretty_name = "Update Time"
     description = "Time the table was last updated"
+    chart_mode = ChartMode.HasChanged
     def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
         if self.get_current_value() != self.get_prev_value():
             return (AlertSeverity.Changed, AlertMethod.Changed, '!=')
@@ -386,8 +392,8 @@ class Mean(NumericMetricTracker):
     description = 'Average non-null value'
 
 class AvgStringLength(NumericMetricTracker):
-    pretty_name = 'Average String Length'
-    description = 'Average string length'
+    pretty_name = 'Average Length'
+    description = 'Average length of string'
 
 class Stddev(NumericMetricTracker):
     pretty_name = 'Standard Deviation'
@@ -401,17 +407,6 @@ class NumericPercentiles(NumericMetricTracker):
     def value_formatter(self, value: Any) -> str:
         if value is None:
             return super().value_formatter(value)
-        # """ TODO: this is probably more suited to histograms; maybe
-        # a [┄─━═=#=═━─┄] plot would be better here? """
-        # bottom = min(value.values())
-        # top = max(value.values())
-        # sorted_keys = sorted(value.keys(), key=lambda k: int(k[0:-1]))
-        # ys = [
-        #     math.floor(value[k] / ((top - bottom) or 1) * 5)
-        #     for k in sorted_keys
-        # ]
-        # return '⎹' + arr_to_dots([0] + ys) + '⎸'
-
         L = 10
         chars = ' -=░▓░=- '
         part_widths = [
@@ -481,7 +476,7 @@ class NumericHistogram(NumericMetricTracker):
         if value is None:
             return super().value_formatter(value)
         max_val = max(value.values())
-        sorted_keys = sorted(value.keys(), key=lambda k: float(k))
+        sorted_keys = sorted(value.keys(), key=maybe_float)
         ys = [
             math.floor(value[k] / (max_val or 1) * 5.0)
             for k in sorted_keys
@@ -489,13 +484,14 @@ class NumericHistogram(NumericMetricTracker):
         return '⎹' + arr_to_dots(ys) + '⎸'
 
     def get_single_delta(self, a, b) -> float | None:
-        """ Returns average change in percentile across all measured percentiles """
+        """ Returns average absolute change in bucket quanitiy
+        across all measured buckets """
         if a is None or b is None:
             return None
 
         def ordered_values(v):
             return [
-                v[k] for k in sorted(v.keys(), key=float)
+                v[k] for k in sorted(v.keys(), key=maybe_float)
             ]
 
         return sum(
@@ -527,3 +523,29 @@ class NumericHistogram(NumericMetricTracker):
         if not total:
             return None
         return delta / total
+
+class DatetimeHistogram(NumericHistogram):
+    """ Like numeric hist, but align buckets by key """
+    def get_single_delta(self, a, b) -> float | None:
+        """ Returns average absolute change in bucket quanitiy
+        across all measured buckets """
+        if a is None or b is None:
+            return None
+
+        return sum(
+            abs(a.get(k, 0) - b.get(k, 0))
+            for k in set(a.keys()) | set(b.keys())
+        )
+
+
+class TrueCount(NumericMetricTracker):
+    pretty_name = 'True Count'
+    description = 'Number of rows that are true'
+
+class FalseCount(NumericMetricTracker):
+    pretty_name = 'False Count'
+    description = 'Number of rows that are false'
+
+class BooleanRate(PercentMetricTracker):
+    pretty_name = 'True Rate'
+    description = 'True count / (true count + false count). Ignores nulls.'

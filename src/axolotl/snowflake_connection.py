@@ -2,9 +2,9 @@ import time
 import json
 import traceback
 
-from typing import NamedTuple, List, Tuple, TypedDict, NotRequired
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple, List, Tuple, TypedDict, NotRequired, Dict, Any
 
 import snowflake.connector
 from snowflake.connector import DictCursor
@@ -243,7 +243,7 @@ class SnowflakeConn:
         }
 
     def _package_metrics(
-        self, column_info: ColumnInfo, query_results: dict[str, any]
+        self, column_info: ColumnInfo, query_results: Dict[str, Any]
     ) -> List[Metric]:
         """
         Takes the output of _query_values and packages them into metrics list
@@ -272,7 +272,7 @@ class SnowflakeConn:
 
     def _query_values(
         self, query_columns: dict[str, str], column_info: ColumnInfo
-    ) -> dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Use this instead of _query_metrics when you need to do something else to
         the results before packaging them.
@@ -282,7 +282,7 @@ class SnowflakeConn:
         """
 
         (fq_table_name, column_name, data_type, is_nullable) = column_info
-        res: dict[str, any] = {}
+        res: Dict[str, Any] = {}
 
         query = f"""
             SELECT CURRENT_TIMESTAMP() as "_measured_at",
@@ -301,6 +301,8 @@ class SnowflakeConn:
 
                 # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
+                if not results:
+                    raise ValueError('No results found')
 
             except Exception:
                 print(f"Error executing query: {query}")
@@ -377,9 +379,7 @@ class SnowflakeConn:
         data_type_simple = get_simple_data_type(data_type)
 
         if data_type_simple != "string" and data_type_simple != "boolean":
-            raise ValueError(
-                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean"
-            )
+            raise TypeError(f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean")
 
         col_sql = f'c."{column_name}"'
         query_columns = self._common_queries(column_info)
@@ -428,7 +428,8 @@ class SnowflakeConn:
                 "numeric_min": f"MIN({col_sql})",
                 "numeric_max": f"MAX({col_sql})",
                 "numeric_mean": f"AVG({col_sql})",
-                "numeric_stddev": f"STDDEV({col_sql})",
+                # cast to float to avoid precision overflow errors
+                "numeric_stddev": f"STDDEV({col_sql}::float)",
             }
         )
 
@@ -467,6 +468,7 @@ class SnowflakeConn:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute(percentile_query)
                 results = cur.fetchone()
+                assert results is not None
                 measured_at = results["MEASURED_AT"]
                 metrics.append(
                     Metric(
@@ -484,6 +486,7 @@ class SnowflakeConn:
             raise
 
         if query_values["numeric_max"] == query_values["numeric_min"]:
+            ## If all values are the same, just put them in one bucket.
             metrics.append(
                 Metric(
                     run_id=self.run_id,
@@ -499,7 +502,6 @@ class SnowflakeConn:
             )
         else:
             num_buckets = 10
-            ## only run histograms if we have at least one bucket
             try:
                 histogram_query = f"""
                         WITH cte AS (
@@ -515,19 +517,37 @@ class SnowflakeConn:
                                     (SELECT COL_MIN FROM cte),
                                     (SELECT COL_MAX FROM cte),
                                     {num_buckets}
-                                ), 1), {num_buckets}) * (SELECT BUCKET_SIZE FROM cte) + (select COL_MIN FROM cte) as bucket,
+                                ), 1), {num_buckets}) as bucket_i,
                                 COUNT(*) as count
                             FROM {fq_table_name} AS t
-                            GROUP BY bucket
+                            GROUP BY bucket_i
+                        ),
+                        empty_buckets as (
+                            SELECT
+                                column1 as bucket_i,
+                                0 as count
+                            FROM VALUES {', '.join(f'({i})' for i in range(1, num_buckets + 1))}
+                        ),
+                        dense_buckets as (
+                            select
+                                bucket_i * (SELECT BUCKET_SIZE FROM cte) + (select COL_MIN FROM cte) as bucket,
+                                sum(count) as count
+                            from (
+                                select * from histogram_buckets
+                                UNION ALL
+                                select * from empty_buckets
+                            )
+                            group by bucket_i
                         )
                         SELECT
                             CURRENT_TIMESTAMP() as MEASURED_AT,
                             OBJECT_AGG(bucket::VARCHAR, count) as NUMERIC_HISTOGRAM
-                        FROM histogram_buckets;
+                        FROM dense_buckets;
                     """
                 with self.conn.cursor(DictCursor) as cur:
                     cur.execute(histogram_query)
                     results = cur.fetchone()
+                    assert results is not None
                     measured_at = results["MEASURED_AT"]
                     metrics.append(
                         Metric(
@@ -578,53 +598,72 @@ class SnowflakeConn:
 
         ## Then the histogram
         histogram_query = f"""
-                    WITH date_range AS (
-                        SELECT
-                            MIN({column_name}) AS {column_name}_MIN,
-                            MAX({column_name}) AS {column_name}_MAX,
-                            DATEDIFF(day, {column_name}_MIN, {column_name}_MAX) AS DATE_DIFF_DAYS,
-                            DATEDIFF(hour, {column_name}_MIN, {column_name}_MAX) AS DATE_DIFF_HOURS,
-                            DATEDIFF(month, {column_name}_MIN, {column_name}_MAX) AS DATE_DIFF_MONTHS,
-                            DATEDIFF(year, {column_name}_MIN, {column_name}_MAX) AS DATE_DIFF_YEARS
-                        FROM {fq_table_name}
-                    ),
-                    bucket_config AS (
-                        SELECT
-                            dr.*,
-                            CASE
-                                WHEN dr.DATE_DIFF_DAYS < 1 THEN 'hour'
-                                WHEN dr.DATE_DIFF_MONTHS < 1 THEN 'day'
-                                WHEN dr.DATE_DIFF_YEARS < 1 THEN 'month'
-                                ELSE 'year'
-                            END AS BUCKET_UNIT,
-                            CASE
-                                WHEN dr.DATE_DIFF_DAYS < 1 THEN LEAST(dr.DATE_DIFF_HOURS, 24)
-                                WHEN dr.DATE_DIFF_DAYS < 31 THEN LEAST(dr.DATE_DIFF_DAYS, 31)
-                                WHEN dr.DATE_DIFF_DAYS < 365 THEN LEAST(dr.DATE_DIFF_MONTHS, 12)
-                                ELSE LEAST(dr.DATE_DIFF_YEARS, 10)
-                            END AS NUM_BUCKETS
-                        FROM date_range dr
+                    with bucket_config as (
+                        select
+                            min(t."{column_name}")
+                                as col_min,
+                            max(t."{column_name}")
+                                as col_max,
+                            datediff(hour, col_min, col_max)
+                                as date_diff_hours,
+                            datediff(day, col_min, col_max)
+                                as date_diff_days,
+                            datediff(month, col_min, col_max)
+                                as date_diff_months,
+                            datediff(year, col_min, col_max)
+                                as date_diff_years,
+                            case
+                                when date_diff_days < 1 then 'hour'
+                                when date_diff_days <= 31 then 'day'
+                                when date_diff_months <= 36 then 'month'
+                                else 'year'
+                            end
+                                as bucket_unit,
+                            greatest(1.0, ceil(date_diff_years / 30.0)) as years_per_bin  // used only with bucket_unit = year
+                        from {fq_table_name} as t
                     ),
                     histogram_buckets AS (
                         SELECT
                             CASE bc.BUCKET_UNIT
-                                WHEN 'hour' THEN DATE_TRUNC('hour', {column_name})
-                                WHEN 'day' THEN DATE_TRUNC('day', {column_name})
-                                WHEN 'month' THEN DATE_TRUNC('month', {column_name})
+                                WHEN 'hour' THEN
+                                    DATE_TRUNC('hour', t."{column_name}")
+                                WHEN 'day' THEN
+                                    DATE_TRUNC('day', t."{column_name}")
+                                WHEN 'month' THEN
+                                    DATE_TRUNC('month', t."{column_name}")
                                 WHEN 'year' THEN
-                                    CASE
-                                        -- If more than 10 years, compress into 10 buckets
-                                        WHEN bc.DATE_DIFF_YEARS > 10 THEN
-                                            DATEADD('year',
-                                                FLOOR(DATEDIFF('year', bc.{column_name}_MIN, {column_name}) / CEIL(bc.DATE_DIFF_YEARS / 10.0)) * CEIL(bc.DATE_DIFF_YEARS / 10.0), bc.{column_name}_MIN)
-                                        ELSE DATE_TRUNC('year', {column_name})
-                                    END
+                                    // year(min) + years_per_bin * floor((year - min) / years_per_bin)
+                                    DATEADD('year',
+                                        bc.years_per_bin * floor((year(t."{column_name}") - year(bc.col_min)) / bc.years_per_bin),
+                                        DATE_TRUNC('year', bc.col_min)
+                                    )
                             END AS bucket_timestamp,
                             bc.BUCKET_UNIT,
                             COUNT(*) as count
-                        FROM {fq_table_name}
-                        CROSS JOIN bucket_config bc
-                        GROUP BY bucket_timestamp, bc.BUCKET_UNIT, bc.DATE_DIFF_YEARS, bc.{column_name}_MIN
+                        FROM {fq_table_name} as t
+                        CROSS JOIN bucket_config as bc
+                        GROUP BY bucket_timestamp, bc.BUCKET_UNIT
+                    ),
+                    empty_buckets as (
+                        SELECT
+                            v.column1 as bucket_i,
+                            case bc.bucket_unit
+                                when 'hour' then
+                                    dateadd(hour, bucket_i, DATE_TRUNC(hour, col_min))
+                                when 'day' then
+                                    dateadd(day, bucket_i, DATE_TRUNC(day, col_min))
+                                when 'month' then
+                                    dateadd(month, bucket_i, DATE_TRUNC(month, col_min))
+                                when 'year' then
+                                    dateadd(year, bucket_i * bc.years_per_bin, DATE_TRUNC(year, col_min))
+                            end as bucket_timestamp,
+                            bc.BUCKET_UNIT,
+                            0 as count
+                        FROM VALUES {', '.join(f'({i})' for i in range(0, 40))} as v
+                        CROSS JOIN bucket_config as bc
+                        where
+                            bucket_timestamp > bc.col_min
+                            and bucket_timestamp < bc.col_max
                     ),
                     formatted_buckets AS (
                         SELECT
@@ -634,8 +673,13 @@ class SnowflakeConn:
                                 WHEN 'month' THEN TO_CHAR(bucket_timestamp, 'YYYY-MM')
                                 WHEN 'year' THEN TO_CHAR(bucket_timestamp, 'YYYY')
                             END AS bucket,
-                            count
-                        FROM histogram_buckets
+                            sum(count) as count
+                        FROM (
+                            select BUCKET_UNIT, bucket_timestamp, count from histogram_buckets
+                            UNION ALL
+                            select BUCKET_UNIT, bucket_timestamp, count from empty_buckets
+                        )
+                        group by 1
                     )
                     SELECT
                         CURRENT_TIMESTAMP() as MEASURED_AT,
@@ -647,14 +691,15 @@ class SnowflakeConn:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute(histogram_query)
                 results = cur.fetchone()
+                assert results is not None
                 measured_at = results["MEASURED_AT"]
                 metrics.append(
                     Metric(
                         run_id=self.run_id,
                         target_table=fq_table_name,
                         target_column=column_name,
-                        metric_name="numeric_histogram",
-                        metric_value=results["NUMERIC_HISTOGRAM"],
+                        metric_name="datetime_histogram",
+                        metric_value=json.loads(results["NUMERIC_HISTOGRAM"]),
                         measured_at=measured_at,
                     )
                 )
@@ -874,10 +919,17 @@ class SnowflakeConn:
                 """
                 )
                 results = cur.fetchone()
+<<<<<<< HEAD
             except Exception:
                 print("Error getting table update times")
                 print(traceback.format_exc())
                 raise
+=======
+                assert results is not None
+            except Exception as e:
+                print(f"Error getting table update times: {e}")
+                raise e
+>>>>>>> origin/main
 
             metrics += [
                 Metric(
