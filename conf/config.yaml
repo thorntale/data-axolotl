@@ -30,8 +30,8 @@ connections:
     # TODO: make this optional
     # schema: TPCH_SF10
     include_schemas:
-      - TPCH_SF10
-      #- TPCH_SF1
+      - TPCH_SF1
+      #- TPCH_SF10
 #  climate:
 #    type: snowflake
 #    # If the type is snowflake, this matches snowflake's connection.toml entries

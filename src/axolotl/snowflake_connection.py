@@ -139,7 +139,6 @@ class SnowflakeConn:
         self.per_run_timeout_seconds = metrics_config.per_run_timeout_seconds
         self.exclude_expensive_queries = metrics_config.exclude_expensive_queries
 
-
         # Prepare connection parameters for Snowflake connector
         # Convert Pydantic model to dict and filter out custom fields
         conn_params = options.model_dump(
@@ -302,7 +301,7 @@ class SnowflakeConn:
                 # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
                 if not results:
-                    raise ValueError('No results found')
+                    raise ValueError("No results found")
 
             except Exception:
                 print(f"Error executing query: {query}")
@@ -313,7 +312,6 @@ class SnowflakeConn:
             #    res[metric_name] = metric_value
 
         return res
-
 
     def _query_metrics(
         self, query_columns: dict[str, str], column_info: ColumnInfo
@@ -379,7 +377,9 @@ class SnowflakeConn:
         data_type_simple = get_simple_data_type(data_type)
 
         if data_type_simple != "string" and data_type_simple != "boolean":
-            raise TypeError(f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean")
+            raise TypeError(
+                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean"
+            )
 
         col_sql = f'c."{column_name}"'
         query_columns = self._common_queries(column_info)
@@ -919,17 +919,10 @@ class SnowflakeConn:
                 """
                 )
                 results = cur.fetchone()
-<<<<<<< HEAD
             except Exception:
                 print("Error getting table update times")
                 print(traceback.format_exc())
                 raise
-=======
-                assert results is not None
-            except Exception as e:
-                print(f"Error getting table update times: {e}")
-                raise e
->>>>>>> origin/main
 
             metrics += [
                 Metric(
