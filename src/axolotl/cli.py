@@ -21,7 +21,7 @@ def run(
     config_path: Annotated[str, typer.Option(prompt=True)],
 ):
     """
-    Execute a new run. Takes a --config path/to/config.toml
+    Execute a new run. Takes a --config path/to/config.yaml
     """
 
     typer.echo("Running...")
