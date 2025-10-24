@@ -4,6 +4,7 @@ import traceback
 
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 from typing import NamedTuple, List, Tuple, TypedDict, NotRequired, Dict, Any
 
 import snowflake.connector
@@ -20,11 +21,23 @@ def to_string_array(items: List[str]) -> str:
     return f"""('{ "', '".join(items)}')"""
 
 
+class SimpleDataType(Enum):
+    """Simple categorization of Snowflake data types"""
+    BOOLEAN = "boolean"
+    NUMERIC = "numeric"
+    STRING = "string"
+    DATETIME = "datetime"
+    STRUCTURED = "structured"
+    UNSTRUCTURED = "unstructured"
+    VECTOR = "vector"
+    OTHER = "other"
+
+
 class ColumnInfo(NamedTuple):
     fq_table_name: str
     column_name: str
     data_type: str
-    is_nullable: str
+    data_type_simple: SimpleDataType
 
 
 SNOWFLAKE_NUMERIC_TYPES = [
@@ -41,7 +54,8 @@ SNOWFLAKE_NUMERIC_TYPES = [
     "FLOAT4",
     "FLOAT8",
     "DOUBLE",
-    "DOUBLE PRECISION" "REAL",
+    "DOUBLE PRECISION",
+    "REAL",
 ]
 
 SNOWFLAKE_TEXT_TYPES = [
@@ -81,25 +95,24 @@ SNOWFLAKE_VECTOR_TYPES = [
 ]
 
 
-## TODO: turn these into enums
-def get_simple_data_type(data_type: str) -> str:
+def get_simple_data_type(data_type: str) -> SimpleDataType:
     data_type = data_type.upper()
     if data_type == "BOOLEAN":
-        return "boolean"
+        return SimpleDataType.BOOLEAN
     if data_type in SNOWFLAKE_NUMERIC_TYPES:
-        return "numeric"
+        return SimpleDataType.NUMERIC
     if data_type in SNOWFLAKE_TEXT_TYPES:
-        return "string"
+        return SimpleDataType.STRING
     if data_type in SNOWFLAKE_DATETIME_TYPES:
-        return "datetime"
+        return SimpleDataType.DATETIME
     if data_type in SNOWFLAKE_STRUCTURED_TYPES:
-        return "structured"
+        return SimpleDataType.STRUCTURED
     if data_type in SNOWFLAKE_UNSTRUCTURED_TYPES:
-        return "unstructured"
+        return SimpleDataType.UNSTRUCTURED
     if data_type in SNOWFLAKE_VECTOR_TYPES:
-        return "vector"
+        return SimpleDataType.VECTOR
     else:
-        return "other"
+        return SimpleDataType.OTHER
 
 
 class SnowflakeConn:
@@ -137,7 +150,9 @@ class SnowflakeConn:
         self.per_query_timeout_seconds = metrics_config.per_query_timeout_seconds
         self.per_column_timeout_seconds = metrics_config.per_column_timeout_seconds
         self.per_run_timeout_seconds = metrics_config.per_run_timeout_seconds
+
         self.exclude_expensive_queries = metrics_config.exclude_expensive_queries
+        self.exclude_complex_queries = metrics_config.exclude_complex_queries
 
         # Prepare connection parameters for Snowflake connector
         # Convert Pydantic model to dict and filter out custom fields
@@ -227,19 +242,65 @@ class SnowflakeConn:
 
             print(f"Snapshotted columns in {round(t2-t1, 2)} seconds")
 
-    def _common_queries(
+    def _simple_queries(
         self,
         column_info: ColumnInfo,
     ) -> dict[str, str]:
+        """
+        The expensive queries are distinct_count (and therefore distinct_rate), and string_avg_length
+        """
+
+        data_type_simple = column_info.data_type_simple
         col_sql = f'c."{column_info.column_name}"'
-        return {
-            "data_type": f"'{column_info.data_type}'",
+        queries = {
             "row_count": "COUNT(*)",
             "null_count": f"COUNT_IF({col_sql} IS NULL)",
             "null_pct": f'100.0 * "null_count" / "row_count"',
-            "distinct_count": f"COUNT(DISTINCT({col_sql}))",
-            "distinct_rate": f'100.0 * "distinct_count" / ("row_count" - "null_count")',
         }
+
+        if not self.exclude_expensive_queries:
+            queries.update(
+                {
+                    "distinct_count": f"COUNT(DISTINCT({col_sql}))",
+                    "distinct_rate": f'100.0 * "distinct_count" / ("row_count" - "null_count")',
+                }
+            )
+
+        # Type-specific queries
+        if data_type_simple == SimpleDataType.NUMERIC:
+            queries.update(
+                {
+                    "numeric_min": f"MIN({col_sql})",
+                    "numeric_max": f"MAX({col_sql})",
+                    "numeric_mean": f"AVG({col_sql})",
+                    "numeric_stddev": f"STDDEV({col_sql}::float)",
+                }
+            )
+
+        elif data_type_simple == SimpleDataType.STRING:
+            if not self.exclude_expensive_queries:
+                queries.update(
+                    {
+                    "string_avg_length": f"AVG(LEN({col_sql}))",
+                    }
+                )
+
+        elif data_type_simple == SimpleDataType.BOOLEAN:
+            queries.update(
+                {
+                    "true_count": f"COUNT_IF({col_sql} = TRUE)",
+                    "false_count": f"COUNT_IF({col_sql} = FALSE)",
+                }
+            )
+        elif data_type_simple == SimpleDataType.DATETIME:
+            queries.update(
+                {
+                    "datetime_min": f"MIN({col_sql})",
+                    "datetime_max": f"MAX({col_sql})",
+                }
+            )
+
+        return queries
 
     def _package_metrics(
         self, column_info: ColumnInfo, query_results: Dict[str, Any]
@@ -248,7 +309,7 @@ class SnowflakeConn:
         Takes the output of _query_values and packages them into metrics list
         """
         metrics: List[Metric] = []
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        (fq_table_name, column_name, _, _) = column_info
 
         if not query_results["_measured_at"]:
             raise ValueError("missing _measured_at")
@@ -269,6 +330,39 @@ class SnowflakeConn:
             )
         return metrics
 
+    def _query_values_benchmark(
+        self, query_columns: dict[str, str], column_info: ColumnInfo
+    ) -> Dict[str, float]:
+        """
+        INTERNAL ONLY. Runs each query_column query separately, and instead of
+        the result, returns a dict { metric_name : query duration}
+        """
+
+        (fq_table_name, _, _, _) = column_info
+        res: Dict[str, float] = {}
+
+        for metric_name, metric_query in query_columns.items():
+            query = f"""
+                SELECT {metric_query} AS "{metric_name}"
+                FROM {fq_table_name} as c
+            """
+            with self.conn.cursor(DictCursor) as cur:
+                try:
+                    t0 = time.monotonic()
+                    cur.execute(query)
+                    results = cur.fetchone()
+                    t1 = time.monotonic()
+                    if not results:
+                        raise ValueError("No results found")
+
+                    res[metric_name] = t1 - t0
+
+                except Exception:
+                    print(f"Error executing query: {query}")
+                    print(traceback.format_exc())
+                    raise
+        return res
+
     def _query_values(
         self, query_columns: dict[str, str], column_info: ColumnInfo
     ) -> Dict[str, Any]:
@@ -280,7 +374,7 @@ class SnowflakeConn:
         of a list of metrics.
         """
 
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        (fq_table_name, _, _, _) = column_info
         res: Dict[str, Any] = {}
 
         query = f"""
@@ -296,9 +390,6 @@ class SnowflakeConn:
         with self.conn.cursor(DictCursor) as cur:
             try:
                 cur.execute(query)
-                # return cur.query_id
-
-                # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
                 if not results:
                     raise ValueError("No results found")
@@ -308,8 +399,6 @@ class SnowflakeConn:
                 print(traceback.format_exc())
                 raise
             res = results
-            # for metric_name, metric_value in results.items():
-            #    res[metric_name] = metric_value
 
         return res
 
@@ -325,7 +414,7 @@ class SnowflakeConn:
         joins. The FROM clause is hard-coded to column_info.fq_table_name.
         """
 
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        (fq_table_name, column_name, _, _) = column_info
         metrics: List[Metric] = []
 
         query = f"""
@@ -365,41 +454,6 @@ class SnowflakeConn:
                 )
         return metrics
 
-    def scan_text_or_bool_column(self, column_info: ColumnInfo) -> List[Metric]:
-        """
-        Scan a single column of Text or Boolean type. These are simple and
-        hopefully should be efficient.
-
-        Returns:
-            List of Metrics for this column
-        """
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
-        data_type_simple = get_simple_data_type(data_type)
-
-        if data_type_simple != "string" and data_type_simple != "boolean":
-            raise TypeError(
-                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean"
-            )
-
-        col_sql = f'c."{column_name}"'
-        query_columns = self._common_queries(column_info)
-
-        if data_type_simple == "string":
-            query_columns.update(
-                {
-                    "string_avg_length": f"AVG(LEN({col_sql}))",
-                }
-            )
-        elif data_type_simple == "boolean":
-            query_columns.update(
-                {
-                    "true_count": f"COUNT_IF({col_sql} = TRUE)",
-                    "false_count": f"COUNT_IF({col_sql} = FALSE)",
-                }
-            )
-
-        return self._query_metrics(query_columns, column_info)
-
     def scan_numeric_column(
         self, column_info: ColumnInfo, simple_queries_only: bool = True
     ) -> List[Metric]:
@@ -411,31 +465,21 @@ class SnowflakeConn:
             List of Metrics for this column
         """
 
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
-        data_type_simple = get_simple_data_type(data_type)
+        (fq_table_name, column_name, data_type, data_type_simple) = column_info
 
-        if data_type_simple != "numeric":
+        if data_type_simple != SimpleDataType.NUMERIC:
             # traceback.print_exc()
             raise ValueError(
-                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not numeric"
+                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple.value}, not numeric"
             )
 
-        col_sql = f'c."{column_name}"'
-        query_columns = self._common_queries(column_info)
-
-        query_columns.update(
-            {
-                "numeric_min": f"MIN({col_sql})",
-                "numeric_max": f"MAX({col_sql})",
-                "numeric_mean": f"AVG({col_sql})",
-                # cast to float to avoid precision overflow errors
-                "numeric_stddev": f"STDDEV({col_sql}::float)",
-            }
-        )
+        query_columns = self._simple_queries(column_info)
 
         ## Get the simple metrics first
         query_values = self._query_values(query_columns, column_info)
         metrics = self._package_metrics(column_info, query_values)
+        if self.exclude_complex_queries: 
+            return metrics
 
         percentile_query = f"""
                     WITH percentile_state AS (
@@ -575,26 +619,20 @@ class SnowflakeConn:
             List of Metrics for this column
         """
 
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
-        data_type_simple = get_simple_data_type(data_type)
+        (fq_table_name, column_name, data_type, data_type_simple) = column_info
 
-        if data_type_simple != "datetime":
+        if data_type_simple != SimpleDataType.DATETIME:
             raise ValueError(
-                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not datetime"
+                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple.value}, not datetime"
             )
 
-        col_sql = f'c."{column_name}"'
-        query_columns = self._common_queries(column_info)
-
-        query_columns.update(
-            {
-                "numeric_min": f"MIN({col_sql})",
-                "numeric_max": f"MAX({col_sql})",
-            }
-        )
+        query_columns = self._simple_queries(column_info)
 
         ## Get the simple metrics first
         metrics = self._query_metrics(query_columns, column_info)
+
+        if self.exclude_complex_queries: 
+            return metrics
 
         ## Then the histogram
         histogram_query = f"""
@@ -727,19 +765,15 @@ class SnowflakeConn:
         Returns:
             List of Metrics for this column
         """
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
-        data_type_simple = get_simple_data_type(data_type)
 
-        match data_type_simple:
-            case "numeric":
+        match column_info.data_type_simple:
+            case SimpleDataType.NUMERIC:
                 return self.scan_numeric_column(column_info)
-            case "datetime":
+            case SimpleDataType.DATETIME:
                 return self.scan_datetime_column(column_info)
-            case "string" | "boolean":
-                return self.scan_text_or_bool_column(column_info)
             case _:
-                ## unknown case, we'll just do the simple queries
-                query_columns = self._common_queries(column_info)
+                ## every other case, we'll just do the simple queries
+                query_columns = self._simple_queries(column_info)
                 return self._query_metrics(query_columns, column_info)
 
     def list_columns(self) -> List[ColumnInfo]:
@@ -781,7 +815,7 @@ class SnowflakeConn:
                         fq_table_name=fq_table_name,
                         column_name=column_name,
                         data_type=data_type,
-                        is_nullable=is_nullable,
+                        data_type_simple=get_simple_data_type(data_type),
                     )
                 )
 

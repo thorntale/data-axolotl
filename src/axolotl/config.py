@@ -21,6 +21,7 @@ class MetricsConfig(BaseModel):
     per_column_timeout_seconds: int = 60
     per_run_timeout_seconds: int = 300
     exclude_expensive_queries: bool = False
+    exclude_complex_queries: bool = False
 
 
 class SnowflakeOptions(BaseModel):

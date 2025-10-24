@@ -11,6 +11,7 @@ from .state_dao import Metric
 from . import derived_metrics
 from . import trackers as ts
 from .trackers import MetricKey
+from .snowflake_connection import SimpleDataType
 
 
 class MetricSet:
@@ -88,7 +89,7 @@ class MetricSet:
             col_data_type_simples,
         )
 
-        if data_type_simple != 'boolean':
+        if data_type_simple != SimpleDataType.BOOLEAN:
             yield ts.DistinctCount(
                 self._get_metric_with_nulls(MetricKey(table, column, 'distinct_count'))
             )
@@ -102,7 +103,7 @@ class MetricSet:
             self._get_metric_with_nulls(MetricKey(table, column, 'null_pct'))
         )
 
-        if data_type_simple == 'boolean':
+        if data_type_simple == SimpleDataType.BOOLEAN:
             yield ts.TrueCount(
                 self._get_metric_with_nulls(MetricKey(table, column, 'true_count'))
             )
@@ -116,7 +117,7 @@ class MetricSet:
                 )
             )
 
-        if data_type_simple == 'numeric':
+        if data_type_simple == SimpleDataType.NUMERIC:
             yield ts.Min(
                 self._get_metric_with_nulls(MetricKey(table, column, 'numeric_min'))
             )
@@ -136,12 +137,12 @@ class MetricSet:
                 self._get_metric_with_nulls(MetricKey(table, column, 'numeric_histogram'))
             )
 
-        if data_type_simple == 'string':
+        if data_type_simple == SimpleDataType.STRING:
             yield ts.AvgStringLength(
                 self._get_metric_with_nulls(MetricKey(table, column, 'string_avg_length'))
             )
 
-        if data_type_simple == 'datetime':
+        if data_type_simple == SimpleDataType.DATETIME:
             yield ts.MinTS(
                 self._get_metric_with_nulls(MetricKey(table, column, 'numeric_max'))
             )
@@ -152,13 +153,13 @@ class MetricSet:
                 self._get_metric_with_nulls(MetricKey(table, column, 'datetime_histogram'))
             )
 
-        if data_type_simple == 'structured':
+        if data_type_simple == SimpleDataType.STRUCTURED:
             pass # TODO
-        if data_type_simple == 'unstructured':
+        if data_type_simple == SimpleDataType.UNSTRUCTURED:
             pass # TODO
-        if data_type_simple == 'vector':
+        if data_type_simple == SimpleDataType.VECTOR:
             pass # TODO
-        if data_type_simple == 'other':
+        if data_type_simple == SimpleDataType.OTHER:
             pass # TODO
 
     def get_all_alerts(self) -> List[MetricAlert]:
