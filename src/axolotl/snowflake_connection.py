@@ -1,49 +1,43 @@
-import snowflake.connector
-from typing import NamedTuple, List, Tuple, TypedDict, NotRequired, Dict, Any
-from snowflake.connector import DictCursor
-from .state_dao import Metric
+import time
+import json
+import traceback
+
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-import time
-import math
-import json
+from enum import Enum
+from typing import NamedTuple, List, Tuple, TypedDict, NotRequired, Dict, Any
 
-import traceback
+import snowflake.connector
+from snowflake.connector import DictCursor
+
+from .config import AxolotlConfig, SnowflakeOptions
+from .state_dao import Metric
+
+
+def to_string_array(items: List[str]) -> str:
+    """
+    takes ["a", "b", "c"] -> "('a', 'b', 'c')"
+    """
+    return f"""('{ "', '".join(items)}')"""
+
+
+class SimpleDataType(Enum):
+    """Simple categorization of Snowflake data types"""
+    BOOLEAN = "boolean"
+    NUMERIC = "numeric"
+    STRING = "string"
+    DATETIME = "datetime"
+    STRUCTURED = "structured"
+    UNSTRUCTURED = "unstructured"
+    VECTOR = "vector"
+    OTHER = "other"
 
 
 class ColumnInfo(NamedTuple):
     fq_table_name: str
     column_name: str
     data_type: str
-    is_nullable: str
-
-
-class SnowflakeOptions(TypedDict):
-    # Required fields
-    user: str
-    account: str
-    database: str
-    warehouse: str
-
-    # Password authentication (mutually exclusive with private key auth)
-    password: NotRequired[str]
-
-    # Private key authentication (mutually exclusive with password)
-    private_key: NotRequired[bytes]
-    private_key_path: NotRequired[str]
-    private_key_passphrase: NotRequired[str]
-
-    # Optional additional fields that can be passed to snowflake.connector.connect()
-    role: NotRequired[str]
-    schema: NotRequired[str]
-    authenticator: NotRequired[str]
-    session_parameters: NotRequired[dict]
-    timezone: NotRequired[str]
-    autocommit: NotRequired[bool]
-    client_session_keep_alive: NotRequired[bool]
-    validate_default_parameters: NotRequired[bool]
-    paramstyle: NotRequired[str]
-    application: NotRequired[str]
+    data_type_simple: SimpleDataType
 
 
 SNOWFLAKE_NUMERIC_TYPES = [
@@ -60,7 +54,8 @@ SNOWFLAKE_NUMERIC_TYPES = [
     "FLOAT4",
     "FLOAT8",
     "DOUBLE",
-    "DOUBLE PRECISION" "REAL",
+    "DOUBLE PRECISION",
+    "REAL",
 ]
 
 SNOWFLAKE_TEXT_TYPES = [
@@ -100,25 +95,24 @@ SNOWFLAKE_VECTOR_TYPES = [
 ]
 
 
-## TODO: turn these into enums
-def get_simple_data_type(data_type: str) -> str:
+def get_simple_data_type(data_type: str) -> SimpleDataType:
     data_type = data_type.upper()
     if data_type == "BOOLEAN":
-        return "boolean"
+        return SimpleDataType.BOOLEAN
     if data_type in SNOWFLAKE_NUMERIC_TYPES:
-        return "numeric"
+        return SimpleDataType.NUMERIC
     if data_type in SNOWFLAKE_TEXT_TYPES:
-        return "string"
+        return SimpleDataType.STRING
     if data_type in SNOWFLAKE_DATETIME_TYPES:
-        return "datetime"
+        return SimpleDataType.DATETIME
     if data_type in SNOWFLAKE_STRUCTURED_TYPES:
-        return "structured"
+        return SimpleDataType.STRUCTURED
     if data_type in SNOWFLAKE_UNSTRUCTURED_TYPES:
-        return "unstructured"
+        return SimpleDataType.UNSTRUCTURED
     if data_type in SNOWFLAKE_VECTOR_TYPES:
-        return "vector"
+        return SimpleDataType.VECTOR
     else:
-        return "other"
+        return SimpleDataType.OTHER
 
 
 class SnowflakeConn:
@@ -127,18 +121,78 @@ class SnowflakeConn:
     schema.
     """
 
-    def __init__(self, options: SnowflakeOptions, run_id: int):
-        self.database = options["database"]
-        ## note that we rename schema to table_schema here
-        self.table_schema = options["schema"]
+    def __init__(self, config: AxolotlConfig, connection_name: str, run_id: int):
+        """
+        Initialize a Snowflake connection.
+
+        Args:
+            config: AxolotlConfig object containing all configuration
+            connection_name: Name of the connection to use from config.connections
+            run_id: Unique identifier for this snapshot run
+        """
+        if connection_name not in config.connections:
+            raise ValueError(
+                f"Connection '{connection_name}' not found in config. "
+                f"Available connections: {list(config.connections.keys())}"
+            )
+
+        options = config.connections[connection_name]
+
+        self.database = options.database
+        self.include_schemas = options.include_schemas
+        self.exclude_schemas = options.exclude_schemas
+
         self.run_id = run_id
+
+        # Get metrics config (use connection-specific or default)
+        metrics_config = options.metricsConfig or config.default_metrics_config
+        self.max_threads = metrics_config.max_threads
+        self.per_query_timeout_seconds = metrics_config.per_query_timeout_seconds
+        self.per_column_timeout_seconds = metrics_config.per_column_timeout_seconds
+        self.per_run_timeout_seconds = metrics_config.per_run_timeout_seconds
+
+        self.exclude_expensive_queries = metrics_config.exclude_expensive_queries
+        self.exclude_complex_queries = metrics_config.exclude_complex_queries
+
+        # Prepare connection parameters for Snowflake connector
+        # Convert Pydantic model to dict and filter out custom fields
+        conn_params = options.model_dump(
+            exclude_none=True,
+            exclude={"metricsConfig", "type", "include_schemas", "exclude_schemas"},
+        )
+
+        # Handle private_key_file -> read and convert to private_key
+        if "private_key_file" in conn_params:
+            from cryptography.hazmat.backends import default_backend
+            from cryptography.hazmat.primitives import serialization
+
+            private_key_file = conn_params.pop("private_key_file")
+            private_key_pwd = conn_params.pop("private_key_file_pwd", None)
+
+            with open(private_key_file, "rb") as key_file:
+                private_key_data = key_file.read()
+
+            password_bytes = private_key_pwd.encode() if private_key_pwd else None
+
+            private_key = serialization.load_pem_private_key(
+                private_key_data, password=password_bytes, backend=default_backend()
+            )
+
+            pkb = private_key.private_bytes(
+                encoding=serialization.Encoding.DER,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            conn_params["private_key"] = pkb
+
         try:
-            self.conn = snowflake.connector.connect(**options)
-        except Exception as e:
-            print(e)
-            ## FIXME: don't print passwords here
-            print(f"Failed to create snowflake connection: {options}")
-            raise e
+            self.conn = snowflake.connector.connect(**conn_params)
+
+        except Exception:
+            # Don't print sensitive connection params
+            print(f"Failed to create snowflake connection: {connection_name}")
+            print(traceback.format_exc())
+            raise
 
     def __enter__(self):
         return self
@@ -149,9 +203,9 @@ class SnowflakeConn:
         # Return None to propagate any exceptions
         return None
 
-    def snapshot(self, batch_size=10) -> Iterator[List[Metric]]:
+    def snapshot(self) -> Iterator[List[Metric]]:
         """
-        Capture metrics for all tables in the configured database/schema, both
+        Capture metrics for all tables in the configured database/schemas, both
         table-level and column-level for all tables
 
         Args:
@@ -171,15 +225,11 @@ class SnowflakeConn:
 
         yield metrics
 
-        all_column_infos = [
-            column_info
-            for table in table_names
-            for column_info in self.list_columns(table)
-        ]
+        all_column_infos = self.list_columns()
 
         print(f"Snapshotting {len(all_column_infos)} columns...")
 
-        executor = ThreadPoolExecutor(max_workers=batch_size)
+        executor = ThreadPoolExecutor(max_workers=self.max_threads)
         try:
             for column_metrics in executor.map(
                 self.scan_column, all_column_infos, chunksize=1
@@ -192,19 +242,65 @@ class SnowflakeConn:
 
             print(f"Snapshotted columns in {round(t2-t1, 2)} seconds")
 
-    def _common_queries(
+    def _simple_queries(
         self,
         column_info: ColumnInfo,
     ) -> dict[str, str]:
+        """
+        The expensive queries are distinct_count (and therefore distinct_rate), and string_avg_length
+        """
+
+        data_type_simple = column_info.data_type_simple
         col_sql = f'c."{column_info.column_name}"'
-        return {
-            "data_type": f"'{column_info.data_type}'",
+        queries = {
             "row_count": "COUNT(*)",
             "null_count": f"COUNT_IF({col_sql} IS NULL)",
             "null_pct": f'100.0 * "null_count" / "row_count"',
-            "distinct_count": f"COUNT(DISTINCT({col_sql}))",
-            "distinct_rate": f'100.0 * "distinct_count" / ("row_count" - "null_count")',
         }
+
+        if not self.exclude_expensive_queries:
+            queries.update(
+                {
+                    "distinct_count": f"COUNT(DISTINCT({col_sql}))",
+                    "distinct_rate": f'100.0 * "distinct_count" / ("row_count" - "null_count")',
+                }
+            )
+
+        # Type-specific queries
+        if data_type_simple == SimpleDataType.NUMERIC:
+            queries.update(
+                {
+                    "numeric_min": f"MIN({col_sql})",
+                    "numeric_max": f"MAX({col_sql})",
+                    "numeric_mean": f"AVG({col_sql})",
+                    "numeric_stddev": f"STDDEV({col_sql}::float)",
+                }
+            )
+
+        elif data_type_simple == SimpleDataType.STRING:
+            if not self.exclude_expensive_queries:
+                queries.update(
+                    {
+                    "string_avg_length": f"AVG(LEN({col_sql}))",
+                    }
+                )
+
+        elif data_type_simple == SimpleDataType.BOOLEAN:
+            queries.update(
+                {
+                    "true_count": f"COUNT_IF({col_sql} = TRUE)",
+                    "false_count": f"COUNT_IF({col_sql} = FALSE)",
+                }
+            )
+        elif data_type_simple == SimpleDataType.DATETIME:
+            queries.update(
+                {
+                    "datetime_min": f"MIN({col_sql})",
+                    "datetime_max": f"MAX({col_sql})",
+                }
+            )
+
+        return queries
 
     def _package_metrics(
         self, column_info: ColumnInfo, query_results: Dict[str, Any]
@@ -213,7 +309,7 @@ class SnowflakeConn:
         Takes the output of _query_values and packages them into metrics list
         """
         metrics: List[Metric] = []
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        (fq_table_name, column_name, _, _) = column_info
 
         if not query_results["_measured_at"]:
             raise ValueError("missing _measured_at")
@@ -234,6 +330,39 @@ class SnowflakeConn:
             )
         return metrics
 
+    def _query_values_benchmark(
+        self, query_columns: dict[str, str], column_info: ColumnInfo
+    ) -> Dict[str, float]:
+        """
+        INTERNAL ONLY. Runs each query_column query separately, and instead of
+        the result, returns a dict { metric_name : query duration}
+        """
+
+        (fq_table_name, _, _, _) = column_info
+        res: Dict[str, float] = {}
+
+        for metric_name, metric_query in query_columns.items():
+            query = f"""
+                SELECT {metric_query} AS "{metric_name}"
+                FROM {fq_table_name} as c
+            """
+            with self.conn.cursor(DictCursor) as cur:
+                try:
+                    t0 = time.monotonic()
+                    cur.execute(query)
+                    results = cur.fetchone()
+                    t1 = time.monotonic()
+                    if not results:
+                        raise ValueError("No results found")
+
+                    res[metric_name] = t1 - t0
+
+                except Exception:
+                    print(f"Error executing query: {query}")
+                    print(traceback.format_exc())
+                    raise
+        return res
+
     def _query_values(
         self, query_columns: dict[str, str], column_info: ColumnInfo
     ) -> Dict[str, Any]:
@@ -245,7 +374,7 @@ class SnowflakeConn:
         of a list of metrics.
         """
 
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        (fq_table_name, _, _, _) = column_info
         res: Dict[str, Any] = {}
 
         query = f"""
@@ -261,20 +390,15 @@ class SnowflakeConn:
         with self.conn.cursor(DictCursor) as cur:
             try:
                 cur.execute(query)
-                # return cur.query_id
-
-                # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
                 if not results:
-                    raise ValueError('No results found')
+                    raise ValueError("No results found")
 
-            except Exception as e:
-                print(e)
-                print(query)
-                raise e
+            except Exception:
+                print(f"Error executing query: {query}")
+                print(traceback.format_exc())
+                raise
             res = results
-            # for metric_name, metric_value in results.items():
-            #    res[metric_name] = metric_value
 
         return res
 
@@ -290,7 +414,7 @@ class SnowflakeConn:
         joins. The FROM clause is hard-coded to column_info.fq_table_name.
         """
 
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
+        (fq_table_name, column_name, _, _) = column_info
         metrics: List[Metric] = []
 
         query = f"""
@@ -310,11 +434,10 @@ class SnowflakeConn:
 
                 # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
-                assert results is not None
-            except Exception as e:
-                print(e)
-                print(query)
-                raise e
+            except Exception:
+                print(f"Error executing query: {query}")
+                print(traceback.format_exc())
+                raise
 
             for metric_name, metric_value in results.items():
                 if metric_name.startswith("_"):
@@ -331,39 +454,9 @@ class SnowflakeConn:
                 )
         return metrics
 
-    def scan_text_or_bool_column(self, column_info: ColumnInfo) -> List[Metric]:
-        """
-        Scan a single column of Text or Boolean type. These are simple and
-        hopefully should be efficient.
-
-        Returns:
-            List of Metrics for this column
-        """
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
-        data_type_simple = get_simple_data_type(data_type)
-
-        if data_type_simple != "string" and data_type_simple != "boolean":
-            raise TypeError(f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not string or boolean")
-
-        col_sql = f'c."{column_name}"'
-        query_columns = self._common_queries(column_info)
-
-        if data_type_simple == "string":
-            query_columns.update(
-                {
-                    "string_avg_length": f"AVG(LEN({col_sql}))",
-                }
-            )
-        elif data_type_simple == "boolean":
-            query_columns.update(
-                {
-                    "true_count": f"COUNT_IF({col_sql} = TRUE)",
-                    "false_count": f"COUNT_IF({col_sql} = FALSE)",
-                }
-            )
-        return self._query_metrics(query_columns, column_info)
-
-    def scan_numeric_column(self, column_info: ColumnInfo) -> List[Metric]:
+    def scan_numeric_column(
+        self, column_info: ColumnInfo, simple_queries_only: bool = True
+    ) -> List[Metric]:
         """
         Scan a single column of Numeric type. This involves simple stats as well
         as histograms and percentiles.
@@ -372,31 +465,21 @@ class SnowflakeConn:
             List of Metrics for this column
         """
 
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
-        data_type_simple = get_simple_data_type(data_type)
+        (fq_table_name, column_name, data_type, data_type_simple) = column_info
 
-        if data_type_simple != "numeric":
+        if data_type_simple != SimpleDataType.NUMERIC:
             # traceback.print_exc()
             raise ValueError(
-                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not numeric"
+                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple.value}, not numeric"
             )
 
-        col_sql = f'c."{column_name}"'
-        query_columns = self._common_queries(column_info)
-
-        query_columns.update(
-            {
-                "numeric_min": f"MIN({col_sql})",
-                "numeric_max": f"MAX({col_sql})",
-                "numeric_mean": f"AVG({col_sql})",
-                # cast to float to avoid precision overflow errors
-                "numeric_stddev": f"STDDEV({col_sql}::float)",
-            }
-        )
+        query_columns = self._simple_queries(column_info)
 
         ## Get the simple metrics first
         query_values = self._query_values(query_columns, column_info)
         metrics = self._package_metrics(column_info, query_values)
+        if self.exclude_complex_queries: 
+            return metrics
 
         percentile_query = f"""
                     WITH percentile_state AS (
@@ -441,9 +524,10 @@ class SnowflakeConn:
                         measured_at=measured_at,
                     )
                 )
-        except Exception as e:
-            print(f"Error running percentile query: {e}, {percentile_query}")
-            raise e
+        except Exception:
+            print(f"Error running percentile query: {percentile_query}")
+            print(traceback.format_exc())
+            raise
 
         if query_values["numeric_max"] == query_values["numeric_min"]:
             ## If all values are the same, just put them in one bucket.
@@ -454,7 +538,8 @@ class SnowflakeConn:
                     target_column=column_name,
                     metric_name="numeric_histogram",
                     metric_value={
-                        query_values["numeric_max"]: query_values["row_count"] - query_values["null_count"],
+                        query_values["numeric_max"]: query_values["row_count"]
+                        - query_values["null_count"],
                     },
                     measured_at=query_values["_measured_at"],
                 )
@@ -518,9 +603,10 @@ class SnowflakeConn:
                             measured_at=measured_at,
                         )
                     )
-            except Exception as e:
-                print(f"Error running histogram query: {e}, {histogram_query}")
-                raise e
+            except Exception:
+                print(f"Error running histogram query: {histogram_query}")
+                print(traceback.format_exc())
+                raise
 
         return metrics
 
@@ -533,26 +619,20 @@ class SnowflakeConn:
             List of Metrics for this column
         """
 
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
-        data_type_simple = get_simple_data_type(data_type)
+        (fq_table_name, column_name, data_type, data_type_simple) = column_info
 
-        if data_type_simple != "datetime":
+        if data_type_simple != SimpleDataType.DATETIME:
             raise ValueError(
-                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple}, not datetime"
+                f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple.value}, not datetime"
             )
 
-        col_sql = f'c."{column_name}"'
-        query_columns = self._common_queries(column_info)
-
-        query_columns.update(
-            {
-                "numeric_min": f"MIN({col_sql})",
-                "numeric_max": f"MAX({col_sql})",
-            }
-        )
+        query_columns = self._simple_queries(column_info)
 
         ## Get the simple metrics first
         metrics = self._query_metrics(query_columns, column_info)
+
+        if self.exclude_complex_queries: 
+            return metrics
 
         ## Then the histogram
         histogram_query = f"""
@@ -661,9 +741,10 @@ class SnowflakeConn:
                         measured_at=measured_at,
                     )
                 )
-        except Exception as e:
-            print(f"Error running datetime histogram query: {e}, {histogram_query}")
-            raise e
+        except Exception:
+            print(f"Error running datetime histogram query: {histogram_query}")
+            print(traceback.format_exc())
+            raise
 
         return metrics
 
@@ -684,51 +765,57 @@ class SnowflakeConn:
         Returns:
             List of Metrics for this column
         """
-        (fq_table_name, column_name, data_type, is_nullable) = column_info
-        data_type_simple = get_simple_data_type(data_type)
 
-        match data_type_simple:
-            case "numeric":
+        match column_info.data_type_simple:
+            case SimpleDataType.NUMERIC:
                 return self.scan_numeric_column(column_info)
-            case "datetime":
+            case SimpleDataType.DATETIME:
                 return self.scan_datetime_column(column_info)
-            case "string" | "boolean":
-                return self.scan_text_or_bool_column(column_info)
             case _:
-                ## unknown case, we'll just do the simple queries
-                query_columns = self._common_queries(column_info)
+                ## every other case, we'll just do the simple queries
+                query_columns = self._simple_queries(column_info)
                 return self._query_metrics(query_columns, column_info)
 
-    def list_columns(self, table_name: str) -> List[ColumnInfo]:
+    def list_columns(self) -> List[ColumnInfo]:
         """
-        List all columns in a table.
+        List all columns in a database, respecting included and excluded schemas
 
         Args:
-            table_name: Name of the table to list columns for
-
         Returns:
             ColumnInfo: all the information to scan the column
         """
         column_info_arr: List[ColumnInfo] = []
 
-        fq_table_name = f"{self.database}.{self.table_schema}.{table_name}"
+        if len(self.include_schemas) > 0:
+            print(self.include_schemas)
+            table_schema_clause = (
+                f"AND TABLE_SCHEMA IN {to_string_array(self.include_schemas)}"
+            )
+        elif len(self.exclude_schemas) > 0:
+            table_schema_clause = (
+                f"AND TABLE_SCHEMA NOT IN {to_string_array(self.exclude_schemas)}"
+            )
+        else:
+            table_schema_clause = ""
+
+        # fq_table_name = f"{self.database}.{self.table_schema}.{table_name}"
         with self.conn.cursor() as cur:
             query = f"""
-                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, TABLE_SCHEMA, TABLE_NAME
                     FROM INFORMATION_SCHEMA.COLUMNS
                     WHERE TABLE_CATALOG = '{self.database}'
-                    AND TABLE_SCHEMA = '{self.table_schema}'
-                    AND TABLE_NAME = '{table_name}'
+                    {table_schema_clause}
                 """
             cur.execute(query)
 
-            for column_name, data_type, is_nullable in cur:
+            for column_name, data_type, is_nullable, table_schema, table_name in cur:
+                fq_table_name = f"{self.database}.{table_schema}.{table_name}"
                 column_info_arr.append(
                     ColumnInfo(
                         fq_table_name=fq_table_name,
                         column_name=column_name,
                         data_type=data_type,
-                        is_nullable=is_nullable,
+                        data_type_simple=get_simple_data_type(data_type),
                     )
                 )
 
@@ -752,8 +839,35 @@ class SnowflakeConn:
         metrics = []
         table_names = []
         fq_table_names = []
-        g_measured_at = None
 
+        if len(self.include_schemas) > 0:
+            print(self.include_schemas)
+            table_schema_clause = (
+                f"AND TABLE_SCHEMA IN {to_string_array(self.include_schemas)}"
+            )
+        elif len(self.exclude_schemas) > 0:
+            table_schema_clause = (
+                f"AND TABLE_SCHEMA NOT IN {to_string_array(self.exclude_schemas)}"
+            )
+        else:
+            table_schema_clause = ""
+
+        print(
+            f"""
+                    SELECT
+                        TABLE_CATALOG,
+                        TABLE_SCHEMA,
+                        TABLE_NAME,
+                        ROW_COUNT,
+                        BYTES,
+                        CREATED,
+                        LAST_ALTERED,
+                        CURRENT_TIMESTAMP() as measured_at
+                    FROM INFORMATION_SCHEMA.TABLES
+                    WHERE TABLE_CATALOG = '{self.database}'
+                    {table_schema_clause};
+                """
+        )
         with self.conn.cursor() as cur:
             try:
                 cur.execute(
@@ -769,13 +883,14 @@ class SnowflakeConn:
                         CURRENT_TIMESTAMP() as measured_at
                     FROM INFORMATION_SCHEMA.TABLES
                     WHERE TABLE_CATALOG = '{self.database}'
-                    AND TABLE_SCHEMA = '{self.table_schema}';
+                    {table_schema_clause};
                 """
                 )
 
-            except Exception as e:
-                print(f"Error running table: {e}")
-                raise e
+            except Exception:
+                print("Error running table scan query")
+                print(traceback.format_exc())
+                raise
 
             for (
                 table_catalog,
@@ -838,10 +953,10 @@ class SnowflakeConn:
                 """
                 )
                 results = cur.fetchone()
-                assert results is not None
-            except Exception as e:
-                print(f"Error getting table update times: {e}")
-                raise e
+            except Exception:
+                print("Error getting table update times")
+                print(traceback.format_exc())
+                raise
 
             metrics += [
                 Metric(
