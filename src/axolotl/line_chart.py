@@ -155,8 +155,8 @@ class Chart:
         if not plots:
             return None
 
-        max_value = max(v for plot in plots for v in plot.values if v is not None) or 0.0
-        min_value = min(v for plot in plots for v in plot.values if v is not None) or 0.0
+        max_value = max((v for plot in plots for v in plot.values if v is not None), default=0.0) or 0.0
+        min_value = min((v for plot in plots for v in plot.values if v is not None), default=0.0) or 0.0
 
         if include_zero:
             max_value = max(max_value, 0.0)

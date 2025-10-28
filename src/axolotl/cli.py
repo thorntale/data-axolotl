@@ -60,10 +60,10 @@ def list():
             [
                 [
                     run.run_id,
-                    run.started_at and run.started_at.strftime("%d-%m-%Y %H:%M:%S %Z"),
-                    run.finished_at
-                    and run.finished_at.strftime("%d-%m-%Y %H:%M:%S %Z"),
-                    run.successful,
+                    run.started_at and run.started_at.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                    run.finished_at.strftime("%Y-%m-%d %H:%M:%S %Z")
+                    if run.finished_at else '--',
+                    run.successful or 'False',
                 ]
                 for run in runs
             ],

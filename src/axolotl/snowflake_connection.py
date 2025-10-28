@@ -8,6 +8,7 @@ from enum import Enum
 from typing import NamedTuple, List, Tuple, TypedDict, NotRequired, Dict, Any
 
 import snowflake.connector
+import datetime
 from snowflake.connector import DictCursor
 
 from .config import AxolotlConfig, SnowflakeOptions
@@ -38,6 +39,7 @@ class ColumnInfo(NamedTuple):
     column_name: str
     data_type: str
     data_type_simple: SimpleDataType
+    measured_at: datetime.datetime
 
 
 SNOWFLAKE_NUMERIC_TYPES = [
@@ -309,7 +311,7 @@ class SnowflakeConn:
         Takes the output of _query_values and packages them into metrics list
         """
         metrics: List[Metric] = []
-        (fq_table_name, column_name, _, _) = column_info
+        (fq_table_name, column_name, _, _, _) = column_info
 
         if not query_results["_measured_at"]:
             raise ValueError("missing _measured_at")
@@ -338,7 +340,7 @@ class SnowflakeConn:
         the result, returns a dict { metric_name : query duration}
         """
 
-        (fq_table_name, _, _, _) = column_info
+        fq_table_name = column_info.fq_table_name
         res: Dict[str, float] = {}
 
         for metric_name, metric_query in query_columns.items():
@@ -374,7 +376,7 @@ class SnowflakeConn:
         of a list of metrics.
         """
 
-        (fq_table_name, _, _, _) = column_info
+        fq_table_name = column_info.fq_table_name
         res: Dict[str, Any] = {}
 
         query = f"""
@@ -414,7 +416,7 @@ class SnowflakeConn:
         joins. The FROM clause is hard-coded to column_info.fq_table_name.
         """
 
-        (fq_table_name, column_name, _, _) = column_info
+        (fq_table_name, column_name, _, _, _) = column_info
         metrics: List[Metric] = []
 
         query = f"""
@@ -465,7 +467,7 @@ class SnowflakeConn:
             List of Metrics for this column
         """
 
-        (fq_table_name, column_name, data_type, data_type_simple) = column_info
+        (fq_table_name, column_name, data_type, data_type_simple, _) = column_info
 
         if data_type_simple != SimpleDataType.NUMERIC:
             # traceback.print_exc()
@@ -478,7 +480,7 @@ class SnowflakeConn:
         ## Get the simple metrics first
         query_values = self._query_values(query_columns, column_info)
         metrics = self._package_metrics(column_info, query_values)
-        if self.exclude_complex_queries: 
+        if self.exclude_complex_queries:
             return metrics
 
         percentile_query = f"""
@@ -619,7 +621,7 @@ class SnowflakeConn:
             List of Metrics for this column
         """
 
-        (fq_table_name, column_name, data_type, data_type_simple) = column_info
+        (fq_table_name, column_name, data_type, data_type_simple, _) = column_info
 
         if data_type_simple != SimpleDataType.DATETIME:
             raise ValueError(
@@ -631,7 +633,7 @@ class SnowflakeConn:
         ## Get the simple metrics first
         metrics = self._query_metrics(query_columns, column_info)
 
-        if self.exclude_complex_queries: 
+        if self.exclude_complex_queries:
             return metrics
 
         ## Then the histogram
@@ -765,16 +767,28 @@ class SnowflakeConn:
         Returns:
             List of Metrics for this column
         """
+        fq_table_name, column_name, data_type, data_type_simple, measured_at = column_info
+
+        type_metrics = [
+            Metric(
+                run_id=self.run_id,
+                target_table=fq_table_name,
+                target_column=column_name,
+                metric_name="data_type",
+                metric_value=data_type,
+                measured_at=measured_at,
+            ),
+        ]
 
         match column_info.data_type_simple:
             case SimpleDataType.NUMERIC:
-                return self.scan_numeric_column(column_info)
+                return self.scan_numeric_column(column_info) + type_metrics
             case SimpleDataType.DATETIME:
-                return self.scan_datetime_column(column_info)
+                return self.scan_datetime_column(column_info) + type_metrics
             case _:
                 ## every other case, we'll just do the simple queries
                 query_columns = self._simple_queries(column_info)
-                return self._query_metrics(query_columns, column_info)
+                return self._query_metrics(query_columns, column_info) + type_metrics
 
     def list_columns(self) -> List[ColumnInfo]:
         """
@@ -801,14 +815,21 @@ class SnowflakeConn:
         # fq_table_name = f"{self.database}.{self.table_schema}.{table_name}"
         with self.conn.cursor() as cur:
             query = f"""
-                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, TABLE_SCHEMA, TABLE_NAME
-                    FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_CATALOG = '{self.database}'
+                SELECT
+                    COLUMN_NAME,
+                    DATA_TYPE,
+                    IS_NULLABLE,
+                    TABLE_SCHEMA,
+                    TABLE_NAME,
+                    CURRENT_TIMESTAMP() as MEASURED_AT
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE
+                    TABLE_CATALOG = '{self.database}'
                     {table_schema_clause}
-                """
+            """
             cur.execute(query)
 
-            for column_name, data_type, is_nullable, table_schema, table_name in cur:
+            for column_name, data_type, is_nullable, table_schema, table_name, measured_at in cur:
                 fq_table_name = f"{self.database}.{table_schema}.{table_name}"
                 column_info_arr.append(
                     ColumnInfo(
@@ -816,6 +837,7 @@ class SnowflakeConn:
                         column_name=column_name,
                         data_type=data_type,
                         data_type_simple=get_simple_data_type(data_type),
+                        measured_at=measured_at,
                     )
                 )
 

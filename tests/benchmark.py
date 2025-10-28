@@ -25,7 +25,7 @@ def benchmark_column(conn: SnowflakeConn, column_info: ColumnInfo) -> List[Dict[
     - Make sure the conn is configured not to exclude expensive queries
     """
 
-    (fq_table_name, column_name, data_type, _) = column_info
+    (fq_table_name, column_name, data_type, _, _) = column_info
     parts = fq_table_name.split('.')
     table_schema = parts[1] if len(parts) >= 2 else None
     table_name = parts[2] if len(parts) >= 3 else parts[-1]

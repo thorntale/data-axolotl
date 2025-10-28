@@ -336,6 +336,13 @@ class TableUpdateTimeTracker(MetricTracker):
 class TableStalenessTracker(NumericMetricTracker):
     pretty_name = "Staleness"
     description = "How long ago the table was last updated"
+
+    def get_delta_z_alert(self) -> None:
+        """ alerting on delta-z doesn't make a ton of sense for
+        stalness, since it's either always increasing or stays
+        below the same threshold. """
+        return None
+
     def value_formatter(self, value: int) -> str:
         if value is None:
             return super().value_formatter(value)

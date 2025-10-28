@@ -144,10 +144,10 @@ class MetricSet:
 
         if data_type_simple == SimpleDataType.DATETIME:
             yield ts.MinTS(
-                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_max'))
+                self._get_metric_with_nulls(MetricKey(table, column, 'datetime_max'))
             )
             yield ts.MaxTS(
-                self._get_metric_with_nulls(MetricKey(table, column, 'numeric_min'))
+                self._get_metric_with_nulls(MetricKey(table, column, 'datetime_min'))
             )
             yield ts.DatetimeHistogram(
                 self._get_metric_with_nulls(MetricKey(table, column, 'datetime_histogram'))
