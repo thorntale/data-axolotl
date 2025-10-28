@@ -28,12 +28,13 @@ connections:
     private_key_file_pwd: $SNOWFLAKE_PRIVATE_KEY_PASSWORD
     warehouse: COMPUTE_WH
     databases:
-      climate_bi:
-        database: GLOBAL_WEATHER__CLIMATE_DATA_FOR_BI
+#      climate_bi:
+#        database: GLOBAL_WEATHER__CLIMATE_DATA_FOR_BI
       snowflake_sample_data:
         database: SNOWFLAKE_SAMPLE_DATA
         include_schemas:
           - TPCH_SF1
+          - TPCH_SF10
         metrics: # override metrics
           max_threads: 10
           per_query_timeout_seconds: 60

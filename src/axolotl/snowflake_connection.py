@@ -38,7 +38,7 @@ class ColumnInfo(NamedTuple):
     column_name: str
     data_type: str
     data_type_simple: SimpleDataType
-    database: str ## the name of the db
+    database: Database
 
 
 SNOWFLAKE_NUMERIC_TYPES = [
@@ -265,7 +265,7 @@ class SnowflakeConn:
             "null_pct": f'100.0 * "null_count" / "row_count"',
         }
 
-        if not self.exclude_expensive_queries:
+        if not column_info.database.metrics.exclude_expensive_queries:
             queries.update(
                 {
                     "distinct_count": f"COUNT(DISTINCT({col_sql}))",
@@ -285,7 +285,7 @@ class SnowflakeConn:
             )
 
         elif data_type_simple == SimpleDataType.STRING:
-            if not self.exclude_expensive_queries:
+            if not column_info.database.metrics.exclude_expensive_queries:
                 queries.update(
                     {
                     "string_avg_length": f"AVG(LEN({col_sql}))",
@@ -397,7 +397,7 @@ class SnowflakeConn:
         with self.conn.cursor(DictCursor) as cur:
             try:
                 cur.execute(
-                    f"USE DATABASE {database};"
+                    f"USE DATABASE {database.database};"
                 )
                 cur.execute(query)
                 results = cur.fetchone()
@@ -440,7 +440,7 @@ class SnowflakeConn:
         with self.conn.cursor(DictCursor) as cur:
             try:
                 cur.execute(
-                    f"USE DATABASE {database};"
+                    f"USE DATABASE {database.database};"
                 )
                 cur.execute(query)
                 # return cur.query_id
@@ -468,7 +468,7 @@ class SnowflakeConn:
         return metrics
 
     def scan_numeric_column(
-        self, column_info: ColumnInfo, simple_queries_only: bool = True
+        self, column_info: ColumnInfo
     ) -> List[Metric]:
         """
         Scan a single column of Numeric type. This involves simple stats as well
@@ -481,20 +481,16 @@ class SnowflakeConn:
         (fq_table_name, column_name, data_type, data_type_simple, database) = column_info
 
         if data_type_simple != SimpleDataType.NUMERIC:
-            # traceback.print_exc()
             raise ValueError(
                 f"{fq_table_name}.{column_name} ({data_type}) is {data_type_simple.value}, not numeric"
             )
 
-        query_columns = self._simple_queries(column_info)
-
         ## Get the simple metrics first
+        query_columns = self._simple_queries(column_info)
         query_values = self._query_values(query_columns, column_info)
 
-
-        ## TODO add column_type back in
         metrics = self._package_metrics(column_info, query_values)
-        if self.exclude_complex_queries: 
+        if database.metrics.exclude_complex_queries: 
             return metrics
 
         percentile_query = f"""
@@ -527,7 +523,7 @@ class SnowflakeConn:
         try:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute(
-                    f"USE DATABASE {database};"
+                    f"USE DATABASE {database.database};"
                 )
                 cur.execute(percentile_query)
                 results = cur.fetchone()
@@ -609,7 +605,7 @@ class SnowflakeConn:
                     """
                 with self.conn.cursor(DictCursor) as cur:
                     cur.execute(
-                        f"USE DATABASE {database};"
+                        f"USE DATABASE {database.database};"
                     )
                     cur.execute(histogram_query)
                     results = cur.fetchone()
@@ -653,7 +649,7 @@ class SnowflakeConn:
         ## Get the simple metrics first
         metrics = self._query_metrics(query_columns, column_info)
 
-        if self.exclude_complex_queries: 
+        if database.metrics.exclude_complex_queries: 
             return metrics
 
         ## Then the histogram
@@ -750,7 +746,7 @@ class SnowflakeConn:
         try:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute(
-                    f"USE DATABASE {database};"
+                    f"USE DATABASE {database.database};"
                 )
                 cur.execute(histogram_query)
                 results = cur.fetchone()
@@ -843,7 +839,7 @@ class SnowflakeConn:
                         column_name=column_name,
                         data_type=data_type,
                         data_type_simple=get_simple_data_type(data_type),
-                        database=database.database
+                        database=database
                     )
                 )
 
