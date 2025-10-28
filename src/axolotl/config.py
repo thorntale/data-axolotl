@@ -23,8 +23,15 @@ class MetricsConfig(BaseModel):
     exclude_expensive_queries: bool = False
     exclude_complex_queries: bool = False
 
+class Database(BaseModel):
+    """Configuration for a single db."""
+    database: str
 
-class SnowflakeOptions(BaseModel):
+    include_schemas: Optional[list[str]] = []
+    exclude_schemas: Optional[list[str]] = ["INFORMATION_SCHEMA"]
+    metrics: Optional[MetricsConfig] = None
+
+class SnowflakeConnection(BaseModel):
     """Configuration options for Snowflake connections."""
 
     # Connection type
@@ -33,12 +40,7 @@ class SnowflakeOptions(BaseModel):
     # Required fields
     user: str
     account: str
-    database: str
     warehouse: str
-
-    # Schema filtering (mutually exclusive)
-    include_schemas: Optional[list[str]] = []
-    exclude_schemas: Optional[list[str]] = ["INFORMATION_SCHEMA"]
 
     # Password authentication (mutually exclusive with private key auth)
     password: Optional[str] = None
@@ -49,6 +51,8 @@ class SnowflakeOptions(BaseModel):
     private_key_passphrase: Optional[str] = None
     private_key_file: Optional[str] = None
     private_key_file_pwd: Optional[str] = None
+
+    databases: dict[str, Database]
 
     # Optional additional fields that can be passed to snowflake.connector.connect()
     role: Optional[str] = None
@@ -85,7 +89,7 @@ class SnowflakeOptions(BaseModel):
 class AxolotlConfig(BaseModel):
     """Top-level configuration for Axolotl."""
 
-    connections: dict[str, SnowflakeOptions]
+    connections: dict[str, SnowflakeConnection]
     default_metrics_config: MetricsConfig
 
 
@@ -120,20 +124,16 @@ def _substitute_env_vars(value: Any) -> Any:
         return value
 
 
-def _parse_snowflake_connection(
-    conn_name: str,
+def _parse_snowflake_connections(
     conn_config: dict[str, Any],
     default_metrics_config: MetricsConfig,
-    connection_specific_metrics: dict[str, Any] | None = None,
-) -> SnowflakeOptions:
+) -> SnowflakeConnection:
     """
     Parse a Snowflake connection configuration into a SnowflakeOptions object.
 
     Args:
-        conn_name: Name of the connection (for error messages)
         conn_config: Dictionary containing connection configuration
         default_metrics_config: Default metrics configuration to use if not specified
-        connection_specific_metrics: Optional connection-specific metrics from metrics.<conn_name>
 
     Returns:
         SnowflakeOptions
@@ -141,15 +141,15 @@ def _parse_snowflake_connection(
     Raises:
         ValueError: if a field is missing
     """
-    # Use connection-specific metrics if available, otherwise use default
-    metrics_config = default_metrics_config
-    if connection_specific_metrics:
-        metrics_config = MetricsConfig(**connection_specific_metrics)
+    # Parse the SnowflakeConnection first
+    connection = SnowflakeConnection(**conn_config)
 
-    # Create SnowflakeOptions with metricsConfig field
-    # Pydantic will validate required fields and authentication
-    conn_config_with_metrics = {**conn_config, "metricsConfig": metrics_config}
-    return SnowflakeOptions(**conn_config_with_metrics)
+    # Override metrics in each database entry if it doesn't exist
+    for db_config in connection.databases.values():
+        if db_config.metrics is None:
+            db_config.metrics = default_metrics_config
+
+    return connection
 
 
 def parse_config(config_path: str | Path) -> AxolotlConfig:
@@ -189,18 +189,18 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     default_metrics_config = MetricsConfig(**default_metrics_dict)
 
     # TODO: later, support conn types that aren't snowflake
-    connections: dict[str, SnowflakeOptions] = {}
+    connections: dict[str, SnowflakeConnection] = {}
     connections_section = config.get("connections", {})
+
     for conn_name, conn_config in connections_section.items():
         conn_type = conn_config.get("type", "snowflake")
         if conn_type == "snowflake":
             # Check if there's a connection-specific metrics override in metrics.<conn_name>
-            connection_specific_metrics = metrics_section.get(conn_name)
-            connections[conn_name] = _parse_snowflake_connection(
-                conn_name,
+            ##connection_specific_metrics = metrics_section.get(conn_name)
+            connections[conn_name] = _parse_snowflake_connections(
+                #conn_name,
                 conn_config,
                 default_metrics_config,
-                connection_specific_metrics,
             )
         else:
             raise ValueError(f"Invalid connection type {conn_type}")

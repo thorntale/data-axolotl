@@ -7,13 +7,13 @@ metrics:
   exclude_expensive_queries: false
 
   # Override the connection named "sample"
-  sample:
-    max_threads: 10
-    per_query_timeout_seconds: 60
-    per_column_timeout_seconds: 60
-    per_run_timeout_seconds: 60
-    exclude_expensive_queries: false
-    exclude_complex_queries: true
+  #sample:
+  #  max_threads: 10
+  #  per_query_timeout_seconds: 60
+  #  per_column_timeout_seconds: 60
+  #  per_run_timeout_seconds: 60
+  #  exclude_expensive_queries: false
+  #  exclude_complex_queries: true
 
 connections:
   sample:
@@ -27,12 +27,24 @@ connections:
     private_key_file: conf/rsa_key_snowflake.p8
     private_key_file_pwd: $SNOWFLAKE_PRIVATE_KEY_PASSWORD
     warehouse: COMPUTE_WH
-    database: SNOWFLAKE_SAMPLE_DATA
+    databases:
+      climate_bi:
+        database: GLOBAL_WEATHER__CLIMATE_DATA_FOR_BI
+      snowflake_sample_data:
+        database: SNOWFLAKE_SAMPLE_DATA
+        include_schemas:
+          - TPCH_SF1
+        metrics: # override metrics
+          max_threads: 10
+          per_query_timeout_seconds: 60
+          per_column_timeout_seconds: 60
+          per_run_timeout_seconds: 60
+          exclude_expensive_queries: false
+          exclude_complex_queries: true
+
     # TODO: make this optional
     # schema: TPCH_SF10
-    include_schemas:
-      - TPCH_SF1
-      #- TPCH_SF10
+    #- TPCH_SF10
 #  climate:
 #    type: snowflake
 #    # If the type is snowflake, this matches snowflake's connection.toml entries
