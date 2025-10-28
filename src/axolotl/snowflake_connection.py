@@ -141,8 +141,8 @@ class SnowflakeConn:
         options = config.connections[connection_name]
 
         self.database = options.database
-        self.include_schemas = options.include_schemas
-        self.exclude_schemas = options.exclude_schemas
+        self.include_schemas = options.include_schemas or []
+        self.exclude_schemas = options.exclude_schemas or []
 
         self.run_id = run_id
 
@@ -436,6 +436,7 @@ class SnowflakeConn:
 
                 # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
+                assert results
             except Exception:
                 print(f"Error executing query: {query}")
                 print(traceback.format_exc())
@@ -975,6 +976,7 @@ class SnowflakeConn:
                 """
                 )
                 results = cur.fetchone()
+                assert results
             except Exception:
                 print("Error getting table update times")
                 print(traceback.format_exc())

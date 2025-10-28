@@ -51,7 +51,7 @@ def benchmark_column(conn: SnowflakeConn, column_info: ColumnInfo) -> List[Dict[
     return results
 
 
-def benchmark_schema(config: AxolotlConfig, connection_name: str, schema_name: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def benchmark_schema(config: AxolotlConfig, connection_name: str, schema_name: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Benchmark all columns in a specific schema.
 

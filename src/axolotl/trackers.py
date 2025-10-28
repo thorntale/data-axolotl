@@ -240,8 +240,9 @@ class NumericMetricTracker(MetricTracker):
             return (AlertSeverity.Major, AlertMethod.ToFromNull, 'null')
         if z_alert := self.get_delta_z_alert():
             return z_alert
-        dpct = 100 * self.estimate_delta_pct()
-        if dpct is not None:
+        _dpct = self.estimate_delta_pct()
+        if _dpct is not None:
+            dpct = 100 * _dpct
             if abs(dpct) > 20:
                 return (AlertSeverity.Major, AlertMethod.Pct, f"{dpct:+.0f}%")
             if abs(dpct) > 5:
