@@ -1,3 +1,7 @@
+from pathlib import Path
+from typing import Optional
+from typing import Dict
+from typing import List
 from collections import defaultdict
 import sys
 
@@ -17,13 +21,24 @@ class AlertReport:
     def __init__(self, metric_set):
         self.metric_set = metric_set
 
-    def print(self):
+    def print(self, save_path: Optional[Path]):
+        if save_path:
+            try:
+                save_path.mkdir(parents=True, exist_ok=True)
+                with open(save_path / "alerts.txt", "w") as f:
+                    self.console = Console(file=f, width=120)
+                    self._print()
+            finally:
+                self.console = Console()
+        else:
+            self._print()
+
+    def _print(self) -> None:
         all_alerts = self.metric_set.get_all_alerts()
 
-        # self.console.print(all_alerts)
-
         # severity -> table -> column|None -> alert
-        grouped_alerts = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        grouped_alerts: Dict[AlertSeverity, Dict[str, Dict[str|None, List[MetricAlert]]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+
         for a in all_alerts:
             grouped_alerts[a.alert_severity][a.key.target_table][a.key.target_column] += [a]
 

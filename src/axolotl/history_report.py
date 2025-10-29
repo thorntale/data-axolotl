@@ -1,6 +1,8 @@
+from pathlib import Path
 import re
 import itertools
 from typing import Optional, Any, Dict, List
+from contextlib import contextmanager
 
 from rich.console import Console
 from rich.markup import escape
@@ -31,17 +33,39 @@ class HistoryReport:
     def __init__(self, metric_set):
         self.metric_set = metric_set
 
-    def print(self):
-        for table in sorted(self.metric_set.get_tracked_tables()):
-            self._print_table_header(table)
-            for tracker in self.metric_set.get_metric_trackers_for_table(table):
-                self._print_tracker(tracker)
+    def print(self, save_path: Optional[Path]):
+        if save_path:
+            try:
+                save_path.mkdir(parents=True, exist_ok=True)
 
-            columns = self.metric_set.get_tracked_columns(table)
-            for _, column in columns:
-                self._print_column_header(table, column)
-                for tracker in self.metric_set.get_metric_trackers_for_column(table, column):
+                @contextmanager
+                def print_dest_manager(table: str):
+                    with open(save_path / f"{table}.txt", "w") as f:
+                        self.console = Console(file=f, width=120)
+                        yield None
+
+                self._print(print_dest_manager)
+
+            finally:
+                self.console = Console()
+        else:
+            @contextmanager
+            def noop(table):
+                yield None
+            self._print(noop)
+
+    def _print(self, setup_manager: ContextManager):
+        for table in sorted(self.metric_set.get_tracked_tables()):
+            with setup_manager(table):
+                self._print_table_header(table)
+                for tracker in self.metric_set.get_metric_trackers_for_table(table):
                     self._print_tracker(tracker)
+
+                columns = self.metric_set.get_tracked_columns(table)
+                for _, column in columns:
+                    self._print_column_header(table, column)
+                    for tracker in self.metric_set.get_metric_trackers_for_column(table, column):
+                        self._print_tracker(tracker)
 
     def _print_table_header(self, table: str):
         self.console.print(Panel.fit(
