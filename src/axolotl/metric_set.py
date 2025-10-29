@@ -227,10 +227,11 @@ class MetricSet:
             if (t, c) not in create_destroy_keys and (t, None) not in create_destroy_keys:
                 trackers += self.get_metric_trackers_for_column(t, c)
 
-        return create_destroy_alerts + list(filter(
-            lambda v: v is not None,
-            (t.get_alert() for t in trackers),
-        ))
+        return create_destroy_alerts + [
+            a for a in
+            (t.get_alert() for t in trackers)
+            if a is not None
+        ]
 
     def _get_metric_with_nulls(self, key: MetricKey, type_constrained: bool = False) -> List[Metric]:
         """

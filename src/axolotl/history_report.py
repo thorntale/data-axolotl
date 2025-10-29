@@ -1,12 +1,13 @@
 import re
 import itertools
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 from rich.padding import Padding
 from rich.text import Text
+from rich.columns import Columns
 
 from .display_utils import pretty_table_name
 from .display_utils import maybe_float
@@ -71,22 +72,13 @@ class HistoryReport:
                 self._print_numeric_chart(tracker)
         elif tracker.chart_mode == ChartMode.NumericPercentiles:
             self._print_percentile_chart(tracker)
-        elif tracker.chart_mode == ChartMode.NumericHistogram:
+        elif tracker.chart_mode == ChartMode.Histogram:
             self._print_histogram_chart(tracker)
         elif tracker.chart_mode == ChartMode.HasChanged:
             self._print_has_changed_chart(tracker)
 
     def _print_numeric_chart(self, tracker: MetricTracker):
-        chart = Chart(
-            # left_axis_title=tracker.pretty_name,
-            # right_axis_title='Δ',
-            # include_zero_right=True,
-        )
-        # chart.add_plot(
-        #     [None] + tracker.get_all_detlas(),
-        #     side='right',
-        #     color='\033[0;34m',
-        # )
+        chart = Chart()
         chart.add_plot(
             [v.metric_value for v in tracker.values],
             label_end=True,
@@ -114,9 +106,7 @@ class HistoryReport:
             0:   rainbow_colors[0],
             100: rainbow_colors[4],
         }
-        chart = Chart(
-            # left_axis_title=tracker.pretty_name,
-        )
+        chart = Chart()
         for key, color in plot_keys_and_colors.items():
             chart.add_plot(
                 [
@@ -127,26 +117,17 @@ class HistoryReport:
                 label_end=f"{key}p",
             )
         self._print_chart(chart.render())
-        # self._print_percentile_curve(tracker)
-
-    # def _print_percentile_curve(self, tracker: MetricTracker):
-    #     val = self._normalize_percentile_value(tracker.get_current_value())
-    #     if not val:
-    #         return
-    #     xs = range(0, 101, 2)
-    #     ys = [
-    #         max(((k, v) for k, v in val.items() if k <= pct), key=lambda t: t[0])[1]
-    #         for pct in xs
-    #     ]
-    #     chart = Chart()
-    #     chart.add_plot(ys)
-    #     self._print_chart(chart.render())
 
     def _print_histogram_chart(self, tracker: MetricTracker):
-        """ estimates a histogram from the percentile values """
+        self._print_charts_side_by_side(
+            self._get_histogram_time_chart(tracker),
+            self._get_histogram_chart(tracker),
+        )
+
+    def _get_histogram_chart(self, tracker: MetricTracker) -> str:
         val = tracker.get_current_value()
         if not val:
-            return
+            return ''
 
         expansion = max(1, 30 // len(val))
 
@@ -159,26 +140,75 @@ class HistoryReport:
         DISP_H = 10
         chart = Chart(include_zero=True)
         chart.add_plot(ordered_values, bar_like=True)
-        self._print_chart(chart.render())
+        return chart.render()
+
+    def _get_histogram_time_chart(self, tracker: MetricTracker) -> str:
+        all_vals = [v.metric_value for v in tracker.values]
+
+        result_columns: List[List[str]] = []
+
+        for val in all_vals:
+            if val:
+                col_max = max(val.values(), default=0) or 1
+                char_list = '◌○◔◑◕●●'
+                # char_list = '0123456789'
+                col = [
+                    char_list[val[k] * (len(char_list) - 1) // col_max]
+                    for k in reversed(sorted(val.keys(), key=maybe_float))
+                ]
+            else:
+                col = [' ']
+
+            result_columns.append(col)
+
+        dot_rows = [
+            list(row)
+            for row in
+            itertools.zip_longest(*result_columns, fillvalue=' ')
+        ]
+
+        return self._wrap_dot_chart(dot_rows)
 
     def _print_has_changed_chart(self, tracker: MetricTracker):
         vals = [v.metric_value for v in tracker.values]
-        mode = [
+        dots = [
             ' ' if prev == curr == None else
             '\033[2m○\033[0m' if prev == curr else
             '●'
             for prev, curr
             in itertools.pairwise([None] + vals)
         ]
-        self._print_chart(''
-            + "    Δ \033[2m╢ \033[0m" + ''.join(mode) + '\n'
-            + "      \033[2m╚═" + '═' * len(mode) + '\033[0m'
+        self._print_chart(
+            self._wrap_dot_chart([dots], ['Δ'])
+        )
+
+    def _wrap_dot_chart(self, dot_rows: List[List[str]], labels: List[str] = []) -> str:
+        longest_line_len = max((len(l) for l in dot_rows), default=0)
+        full_labels = (labels + [''] * len(dot_rows))[0:len(dot_rows)]
+        return (
+            '\n'.join(
+                f"{label:>5} \033[2m{'╢' if label else '║'} \033[0m" + ''.join(dots)
+                for label, dots in zip(full_labels, dot_rows)
+            )
+            + "\n      \033[2m╚═" + "═" * longest_line_len + "\033[0m"
         )
 
     def _print_chart(self, chart_ansi):
         self.console.print(
             Padding(
                 Text.from_ansi(chart_ansi),
+                (0, 4),
+            ),
+            highlight=False,
+        )
+
+    def _print_charts_side_by_side(self, *chart_ansis):
+        self.console.print(
+            Padding(
+                Columns([
+                    Text.from_ansi(chart_ansi)
+                    for chart_ansi in chart_ansis
+                ]),
                 (0, 4),
             ),
             highlight=False,
