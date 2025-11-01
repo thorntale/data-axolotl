@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Optional
 from typing import List
 from typing_extensions import Annotated
@@ -95,29 +96,24 @@ def rm_run(id: int):
         typer.echo(f"Run {id} does not exist")
 
 
-@app.command()
-def report(
-    target: Annotated[List[str], typer.Argument(
-        help="""
-            Generate a report for only matching objects. Supports: db, db.schema, db.schema.table, db.schema.table.column
-        """
-    )] = [],
-    run_id: Annotated[
-        Optional[int],
-        typer.Option(
-            '--run',
-            help="The run id to make a report on. Defaults to latest successful run."
-        ),
-    ] = None,
-    alerts: Annotated[bool, typer.Option(help="Include the alerting report")] = True,
-    history: Annotated[bool, typer.Option(help="Include the history report")] = True,
-):
+target_arg = typer.Argument(
+    help="""
+        Generate a report for only matching objects. Supports: db, db.schema, db.schema.table, db.schema.table.column
     """
-    Do only the report generation step of run.
+)
+run_id_arg = typer.Option(
+    '--run',
+    help="The run to use. Defaults to latest successful run."
+)
+save_arg = typer.Option(
+    '--save',
+    help="Save report artifacts at the specified location."
+)
 
-    Args:
-        run_options: Optional run options to configure report generation
-    """
+def _get_metric_set(
+    target: List[str] = [],
+    run_id: Optional[int] = None,
+):
     state_conn = get_conn()
     state = StateDAO(state_conn)
 
@@ -148,15 +144,40 @@ def report(
         if m.matches_filter(filters)
     ]
 
+    return MetricSet(filtered_runs, metrics)
 
-    metric_set = MetricSet(filtered_runs, metrics)
+@app.command()
+def report(
+    target: Annotated[List[str], target_arg] = [],
+    run_id: Annotated[Optional[int], run_id_arg] = None,
+    save: Annotated[Optional[Path], save_arg] = None,
+):
+    """
+    Do only the report generation step of run.
+    """
+    metric_set = _get_metric_set(target, run_id)
+    AlertReport(metric_set).print(save)
+    HistoryReport(metric_set).print(save)
 
-    if alerts:
-        AlertReport(metric_set).print()
+@app.command()
+def alerts(
+    target: Annotated[List[str], target_arg] = [],
+    run_id: Annotated[Optional[int], run_id_arg] = None,
+    save: Annotated[Optional[Path], save_arg] = None,
+):
+    """ Show alerts """
+    metric_set = _get_metric_set(target, run_id)
+    AlertReport(metric_set).print(save)
 
-    if history:
-        HistoryReport(metric_set).print()
-
+@app.command()
+def history(
+    target: Annotated[List[str], target_arg] = [],
+    run_id: Annotated[Optional[int], run_id_arg] = None,
+    save: Annotated[Optional[Path], save_arg] = None,
+):
+    """ Show data history """
+    metric_set = _get_metric_set(target, run_id)
+    HistoryReport(metric_set).print(save)
 
 def main():
     """Entry point for the CLI application."""

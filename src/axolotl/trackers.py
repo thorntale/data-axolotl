@@ -12,6 +12,7 @@ from statistics import stdev
 
 import humanize
 
+from .snowflake_connection import SimpleDataType
 from .display_utils import maybe_float
 from .state_dao import Metric
 from .line_chart import arr_to_dots
@@ -51,8 +52,7 @@ class ChartMode(Enum):
     Standard = 'Standard'
     HasChanged = 'HasChanged'
     NumericPercentiles = 'NumericPercentiles'
-    NumericHistogram = 'NumericHistogram'
-    DatetimeHistogram = 'DatetimeHistogram'
+    Histogram = 'Histogram'
 
 # The display value describing the alert change, ex `+10%` or `5.6std`
 type AlertingDelta = str
@@ -88,7 +88,7 @@ class MetricTracker(ABC):
     def get_change_severity(self) -> tuple[AlertSeverity, AlertMethod, AlertingDelta]:
         pass
 
-    def get_alert(self) -> MetricAlert:
+    def get_alert(self) -> Optional[MetricAlert]:
         severity, method, change_formatted = self.get_change_severity()
         return MetricAlert(
             key=self.key,
@@ -363,6 +363,13 @@ class ColumnTypeSimpleTracker(EqualityMetricTracker):
     pretty_name = 'Simple Type'
     description = 'The type category of the column'
 
+    def value_formatter(self, value: SimpleDataType) -> str:
+        return str(value.value)
+
+    # Doesn't alert
+    def get_alert(self) -> None:
+        return None
+
 class DistinctCount(NumericMetricTracker):
     pretty_name = 'Distinct Count'
     description = 'Count of distinct non-null values. May be approximate for large tables.'
@@ -477,7 +484,7 @@ class NumericPercentiles(NumericMetricTracker):
 class NumericHistogram(NumericMetricTracker):
     pretty_name = 'Histogram'
     description = 'Histogram of data distribution'
-    chart_mode = ChartMode.NumericHistogram
+    chart_mode = ChartMode.Histogram
 
     def value_formatter(self, value: Any) -> str:
         # return str(len(value or []))

@@ -5,12 +5,11 @@ import itertools
 from statistics import stdev
 
 import humanize
-from .trackers import MetricTracker, MetricAlert, MetricKey
 
+from .trackers import MetricTracker, MetricAlert, MetricKey, AlertSeverity, AlertMethod
 from .state_dao import Metric
 from . import derived_metrics
 from . import trackers as ts
-from .trackers import MetricKey
 from .snowflake_connection import SimpleDataType
 
 
@@ -29,6 +28,55 @@ class MetricSet:
             for m in metrics
             if m.run_id in sorted(r.run_id for r in runs)[-2:]
         }
+
+    def get_create_destory_alerts(self) -> List[MetricAlert]:
+        current_keys = {
+            (m.target_table, m.target_column)
+            for m in self.metrics
+            if m.run_id == self.latest_run_id
+        }
+
+        prev_run_id = max((r.run_id for r in self.runs if r.run_id != self.latest_run_id), default=None)
+        prev_keys = {
+            (m.target_table, m.target_column)
+            for m in self.metrics
+            if m.run_id == prev_run_id
+        }
+
+        alerts = []
+
+        for table, column in current_keys - prev_keys:
+            alerts.append(MetricAlert(
+                key=MetricKey(table, column, 'column_added' if column else 'table_added'),
+                pretty_name='Column Added' if column else 'Table Added',
+                alert_severity=AlertSeverity.Major,
+                alert_method=AlertMethod.Changed,
+                current_value_formatted='tracked',
+                prev_value_formatted='untracked',
+                change_formatted='+',
+            ))
+
+        for table, column in prev_keys - current_keys:
+            alerts.append(MetricAlert(
+                key=MetricKey(table, column, 'column_removed' if column else 'table_removed'),
+                pretty_name='Column Removed' if column else 'Table Removed',
+                alert_severity=AlertSeverity.Major,
+                alert_method=AlertMethod.Changed,
+                current_value_formatted='untracked',
+                prev_value_formatted='tracked',
+                change_formatted='-',
+            ))
+
+        new_or_removed_tables = {a.key.target_table for a in alerts if a.key.target_column is None}
+        # filter out column level alerts for created or destroyed tables
+        alerts = [
+            a for a in alerts
+            if
+                a.key.target_column is None
+                or a.key.target_table not in new_or_removed_tables
+        ]
+
+        return alerts
 
     def get_tracked_tables(self) -> Set[str]:
         return {
@@ -163,18 +211,27 @@ class MetricSet:
             pass # TODO
 
     def get_all_alerts(self) -> List[MetricAlert]:
+        create_destroy_alerts = self.get_create_destory_alerts()
+        create_destroy_keys = {
+            (a.key.target_table, a.key.target_column)
+            for a in create_destroy_alerts
+        }
+
         trackers: List[MetricTracker] = []
 
         for t in self.get_tracked_tables():
-            trackers += self.get_metric_trackers_for_table(t)
+            if (t, None) not in create_destroy_keys:
+                trackers += self.get_metric_trackers_for_table(t)
 
         for t, c in self.get_tracked_columns():
-            trackers += self.get_metric_trackers_for_column(t, c)
+            if (t, c) not in create_destroy_keys and (t, None) not in create_destroy_keys:
+                trackers += self.get_metric_trackers_for_column(t, c)
 
-        return list(filter(
-            lambda v: v is not None,
-            (t.get_alert() for t in trackers),
-        ))
+        return create_destroy_alerts + [
+            a for a in
+            (t.get_alert() for t in trackers)
+            if a is not None
+        ]
 
     def _get_metric_with_nulls(self, key: MetricKey, type_constrained: bool = False) -> List[Metric]:
         """
