@@ -5,7 +5,7 @@ import traceback
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from typing import NamedTuple, List, Tuple, TypedDict, NotRequired, Dict, Any
+from typing import NamedTuple, List, Tuple, TypedDict, NotRequired, Dict, Any, Set
 
 import snowflake.connector
 from snowflake.connector import DictCursor
@@ -23,6 +23,7 @@ def to_string_array(items: List[str]) -> str:
 
 class SimpleDataType(Enum):
     """Simple categorization of Snowflake data types"""
+
     BOOLEAN = "boolean"
     NUMERIC = "numeric"
     STRING = "string"
@@ -39,6 +40,16 @@ class ColumnInfo(NamedTuple):
     data_type: str
     data_type_simple: SimpleDataType
     database: Database
+
+
+class RunningQuery(NamedTuple):
+    query_id: str
+    timeout_at: float  # monotonic time at which to timeout this query
+
+    # debug info
+    fq_table_name: str
+    column_name: str
+    query_detail: str
 
 
 SNOWFLAKE_NUMERIC_TYPES = [
@@ -140,8 +151,8 @@ class SnowflakeConn:
         options = config.connections[connection_name]
 
         self.databases = options.databases
-        #self.include_schemas = options.include_schemas
-        #self.exclude_schemas = options.exclude_schemas
+        # self.include_schemas = options.include_schemas
+        # self.exclude_schemas = options.exclude_schemas
 
         self.run_id = run_id
 
@@ -154,6 +165,8 @@ class SnowflakeConn:
 
         self.exclude_expensive_queries = metrics_config.exclude_expensive_queries
         self.exclude_complex_queries = metrics_config.exclude_complex_queries
+
+        self.running_queries: Dict[str, RunningQuery] = {}  ## our inflight query queue
 
         # Prepare connection parameters for Snowflake connector
         # Convert Pydantic model to dict and filter out custom fields
@@ -218,36 +231,105 @@ class SnowflakeConn:
 
         for db_name, database in self.databases.items():
             t0 = time.monotonic()
-            (metrics, table_names) = self.scan_table_level_metrics(database)
+            (table_metrics, table_names) = self.scan_table_level_metrics(database)
             t1 = time.monotonic()  ## Time it took to scan the table metrics
 
             print(
                 f"Found {len(table_names)} tables in {round(t1-t0, 2)} seconds in {db_name}({database.database}). Enumerating columns..."
             )
 
-            yield metrics
+            yield table_metrics
 
             all_column_infos = self.list_columns(database)
-
             print(f"Snapshotting {len(all_column_infos)} columns...")
+            num_cols = len(all_column_infos)
+            i = 0
+            metrics: List[Metric] = []
 
-            executor = ThreadPoolExecutor(max_workers=self.max_threads)
-            try:
-                for column_metrics in executor.map(
-                    self.scan_column, all_column_infos, chunksize=1
+            running_queries = []
+
+            t_col_s = time.monotonic()
+            while True:
+                # if we're done, stop
+                print(i, num_cols, len(self.running_queries))
+                if len(self.running_queries) == 0 and i == num_cols:
+                    return metrics
+
+                # check if any running queries are done,
+                #for qid, rq in self.running_queries.items():
+                removed: List[str] = []
+                for qid, rq in self.running_queries.items():
+                    if not self.conn.is_still_running(self.conn.get_query_status(qid)):
+                        with self.conn.cursor(DictCursor) as cur:
+                            cur.get_results_from_sfqid(qid)
+                            results = cur.fetchone()
+                            for metric_name, metric_value in results.items():
+                                if metric_name.startswith("_"):
+                                    continue
+                                metrics.append(
+                                    Metric(
+                                        run_id=self.run_id,
+                                        target_table=rq.fq_table_name,
+                                        target_column=rq.column_name,
+                                        metric_name=metric_name,
+                                        metric_value=metric_value,
+                                        measured_at=results["_measured_at"],
+                                    )
+                                )
+
+                            print(f"done: {qid} {rq.fq_table_name}.{rq.column_name}")
+                            removed.append(qid)
+                            #del self.running_queries[qid]
+
+                    elif rq.timeout_at < time.monotonic():
+                        # if we're done with this query, yoink it
+                        # cancel the query
+                        #del self.running_queries[qid]
+                        removed.append(qid)
+                        print(f"timed out: {rq.fq_table_name}.{rq.column_name}")
+                
+                for r in removed:
+                    del self.running_queries[r]
+
+
+                # headroom = self.max_threads - len(self.running_queries)
+                while (
+                    self.max_threads > len(self.running_queries) and i < num_cols
                 ):
-                    yield column_metrics
-            except Exception:
-                print("Error getting running scan queries")
-                print(traceback.format_exc())
-                raise
-            finally:
-                # wait for all queries to complete before returning
-                executor.shutdown(wait=True)
-                t2 = time.monotonic()  ## Time at which we finished scanning all the columns
+                    print("adding things")
+                    c_info = all_column_infos[i]
+                    query_columns = self._simple_queries(c_info)
+                    rq = self._query_metrics_async(query_columns, c_info)
+                    self.running_queries[rq.query_id] = rq
+                    print(f"started: {rq.fq_table_name}.{rq.column_name}")
+                    i += 1
 
-                print(f"Snapshotted columns in {round(t2-t1, 2)} seconds")
-        
+                    # exec async
+                #
+                time.sleep(1)
+
+                # fill the queue
+
+            # for i in range(len(all_column_infos)):
+
+        # executor = ThreadPoolExecutor(max_workers=database.metrics.max_threads)
+        # try:
+        #     for column_metrics in executor.map(
+        #         self.scan_column, all_column_infos, chunksize=1
+        #     ):
+        #         yield column_metrics
+        # except Exception:
+        #     print("Error getting running scan queries")
+        #     print(traceback.format_exc())
+        #     raise
+        # finally:
+        #     # wait for all queries to complete before returning
+        #     executor.shutdown(wait=True)
+        #     t2 = (
+        #         time.monotonic()
+        #     )  ## Time at which we finished scanning all the columns
+
+        #     print(f"Snapshotted columns in {round(t2-t1, 2)} seconds")
 
     def _simple_queries(
         self,
@@ -288,7 +370,7 @@ class SnowflakeConn:
             if not column_info.database.metrics.exclude_expensive_queries:
                 queries.update(
                     {
-                    "string_avg_length": f"AVG(LEN({col_sql}))",
+                        "string_avg_length": f"AVG(LEN({col_sql}))",
                     }
                 )
 
@@ -396,9 +478,7 @@ class SnowflakeConn:
 
         with self.conn.cursor(DictCursor) as cur:
             try:
-                cur.execute(
-                    f"USE DATABASE {database.database};"
-                )
+                cur.execute(f"USE DATABASE {database.database};")
                 cur.execute(query)
                 results = cur.fetchone()
                 if not results:
@@ -411,6 +491,46 @@ class SnowflakeConn:
             res = results
 
         return res
+
+    def _query_metrics_async(
+        self, query_columns: dict[str, str], column_info: ColumnInfo
+    ) -> RunningQuery:
+        """
+        Given the column info and a dict of metric names -> select clauses,
+        - compose and run the query
+        - package the results into a list of Metrics
+
+        Synchronous. Only works on simple queries that don't require CTEs or
+        joins. The FROM clause is hard-coded to column_info.fq_table_name.
+        """
+
+        (fq_table_name, column_name, _, _, database) = column_info
+
+        query = f"""
+            SELECT CURRENT_TIMESTAMP() as "_measured_at",
+                {",\n".join(
+                    f'{metric_query} AS "{metric_name}"'
+                    for metric_name, metric_query
+                    in query_columns.items()
+                )}
+            FROM {fq_table_name} as c
+        """
+
+        with self.conn.cursor(DictCursor) as cur:
+            try:
+                cur.execute(f"USE DATABASE {database.database};")
+                cur.execute_async(query)
+                return RunningQuery(
+                    query_id=cur.sfqid,
+                    timeout_at=time.monotonic() + 100,
+                    fq_table_name=fq_table_name,
+                    column_name=column_name,
+                    query_detail=query,
+                )
+            except Exception:
+                print(f"Error executing query: {query}")
+                print(traceback.format_exc())
+                raise
 
     def _query_metrics(
         self, query_columns: dict[str, str], column_info: ColumnInfo
@@ -439,13 +559,8 @@ class SnowflakeConn:
 
         with self.conn.cursor(DictCursor) as cur:
             try:
-                cur.execute(
-                    f"USE DATABASE {database.database};"
-                )
+                cur.execute(f"USE DATABASE {database.database};")
                 cur.execute(query)
-                # return cur.query_id
-
-                # query_ids.append(cur.sfqid)
                 results = cur.fetchone()
             except Exception:
                 print(f"Error executing query: {query}")
@@ -467,9 +582,7 @@ class SnowflakeConn:
                 )
         return metrics
 
-    def scan_numeric_column(
-        self, column_info: ColumnInfo
-    ) -> List[Metric]:
+    def scan_numeric_column(self, column_info: ColumnInfo) -> List[Metric]:
         """
         Scan a single column of Numeric type. This involves simple stats as well
         as histograms and percentiles.
@@ -478,7 +591,9 @@ class SnowflakeConn:
             List of Metrics for this column
         """
 
-        (fq_table_name, column_name, data_type, data_type_simple, database) = column_info
+        (fq_table_name, column_name, data_type, data_type_simple, database) = (
+            column_info
+        )
 
         if data_type_simple != SimpleDataType.NUMERIC:
             raise ValueError(
@@ -490,7 +605,7 @@ class SnowflakeConn:
         query_values = self._query_values(query_columns, column_info)
 
         metrics = self._package_metrics(column_info, query_values)
-        if database.metrics.exclude_complex_queries: 
+        if database.metrics.exclude_complex_queries:
             return metrics
 
         percentile_query = f"""
@@ -522,9 +637,7 @@ class SnowflakeConn:
 
         try:
             with self.conn.cursor(DictCursor) as cur:
-                cur.execute(
-                    f"USE DATABASE {database.database};"
-                )
+                cur.execute(f"USE DATABASE {database.database};")
                 cur.execute(percentile_query)
                 results = cur.fetchone()
                 assert results is not None
@@ -604,9 +717,7 @@ class SnowflakeConn:
                         FROM dense_buckets;
                     """
                 with self.conn.cursor(DictCursor) as cur:
-                    cur.execute(
-                        f"USE DATABASE {database.database};"
-                    )
+                    cur.execute(f"USE DATABASE {database.database};")
                     cur.execute(histogram_query)
                     results = cur.fetchone()
                     assert results is not None
@@ -637,7 +748,9 @@ class SnowflakeConn:
             List of Metrics for this column
         """
 
-        (fq_table_name, column_name, data_type, data_type_simple, database) = column_info
+        (fq_table_name, column_name, data_type, data_type_simple, database) = (
+            column_info
+        )
 
         if data_type_simple != SimpleDataType.DATETIME:
             raise ValueError(
@@ -645,11 +758,10 @@ class SnowflakeConn:
             )
 
         query_columns = self._simple_queries(column_info)
-
         ## Get the simple metrics first
         metrics = self._query_metrics(query_columns, column_info)
 
-        if database.metrics.exclude_complex_queries: 
+        if database.metrics.exclude_complex_queries:
             return metrics
 
         ## Then the histogram
@@ -745,9 +857,7 @@ class SnowflakeConn:
 
         try:
             with self.conn.cursor(DictCursor) as cur:
-                cur.execute(
-                    f"USE DATABASE {database.database};"
-                )
+                cur.execute(f"USE DATABASE {database.database};")
                 cur.execute(histogram_query)
                 results = cur.fetchone()
                 assert results is not None
@@ -768,6 +878,35 @@ class SnowflakeConn:
             raise
 
         return metrics
+
+    def scan_column_async(
+        self,
+        column_info: ColumnInfo,
+    ) -> RunningQuery:
+        """
+        Scan a single column
+
+        Args:
+            run_id: Unique identifier for this snapshot run
+            fq_table_name: database.schema.table
+            column_name: Name of the column to scan
+            data_type: Snowflake data type of the column
+            is_nullable: 'YES' or 'NO', because Snowflake is like that
+
+        Returns:
+            List of Metrics for this column
+        """
+
+        match column_info.data_type_simple:
+            # TODO add these back later
+            # case SimpleDataType.NUMERIC:
+            #    return self.scan_numeric_column(column_info)
+            # case SimpleDataType.DATETIME:
+            #    return self.scan_datetime_column(column_info)
+            case _:
+                ## every other case, we'll just do the simple queries
+                query_columns = self._simple_queries(column_info)
+                return self._query_metrics_async(query_columns, column_info)
 
     def scan_column(
         self,
@@ -826,9 +965,7 @@ class SnowflakeConn:
                     FROM INFORMATION_SCHEMA.COLUMNS
                     {table_schema_clause}
                 """
-            cur.execute(
-                f"USE DATABASE {database.database};"
-            )
+            cur.execute(f"USE DATABASE {database.database};")
             cur.execute(query)
 
             for column_name, data_type, is_nullable, table_schema, table_name in cur:
@@ -839,13 +976,15 @@ class SnowflakeConn:
                         column_name=column_name,
                         data_type=data_type,
                         data_type_simple=get_simple_data_type(data_type),
-                        database=database
+                        database=database,
                     )
                 )
 
         return column_info_arr
 
-    def scan_table_level_metrics(self, database: Database) -> Tuple[List[Metric], List[str]]:
+    def scan_table_level_metrics(
+        self, database: Database
+    ) -> Tuple[List[Metric], List[str]]:
         """
         Collect table-level metrics for all tables in the configured database/schema.
 
@@ -864,7 +1003,6 @@ class SnowflakeConn:
         table_names = []
         fq_table_names = []
 
-
         if len(database.include_schemas) > 0:
             print(database.include_schemas)
             table_schema_clause = (
@@ -876,7 +1014,8 @@ class SnowflakeConn:
             )
         else:
             table_schema_clause = ""
-        q =  f"""
+
+        q = f"""
                     SELECT
                         TABLE_CATALOG,
                         TABLE_SCHEMA,
@@ -892,9 +1031,7 @@ class SnowflakeConn:
         print(q)
         with self.conn.cursor() as cur:
             try:
-                cur.execute(
-                    f"USE DATABASE {database.database};"
-                )
+                cur.execute(f"USE DATABASE {database.database};")
                 cur.execute(q)
 
             except Exception:

@@ -6,15 +6,6 @@ metrics:
   per_run_timeout_seconds: 60
   exclude_expensive_queries: false
 
-  # Override the connection named "sample"
-  #sample:
-  #  max_threads: 10
-  #  per_query_timeout_seconds: 60
-  #  per_column_timeout_seconds: 60
-  #  per_run_timeout_seconds: 60
-  #  exclude_expensive_queries: false
-  #  exclude_complex_queries: true
-
 connections:
   sample:
     type: snowflake
@@ -34,7 +25,6 @@ connections:
         database: SNOWFLAKE_SAMPLE_DATA
         include_schemas:
           - TPCH_SF1
-          - TPCH_SF10
         metrics: # override metrics
           max_threads: 10
           per_query_timeout_seconds: 60

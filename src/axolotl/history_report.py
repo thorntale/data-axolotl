@@ -54,7 +54,7 @@ class HistoryReport:
                 yield None
             self._print(noop)
 
-    def _print(self, setup_manager: ContextManager):
+    def _print(self, setup_manager: contextmanager):
         for table in sorted(self.metric_set.get_tracked_tables()):
             with setup_manager(table):
                 self._print_table_header(table)
