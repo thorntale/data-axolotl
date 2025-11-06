@@ -29,7 +29,7 @@ class Database(BaseModel):
 
     include_schemas: Optional[list[str]] = []
     exclude_schemas: Optional[list[str]] = ["INFORMATION_SCHEMA"]
-    metrics: Optional[MetricsConfig] = None
+    metrics_config: Optional[MetricsConfig] = None
 
 class SnowflakeConnection(BaseModel):
     """Configuration options for Snowflake connections."""
@@ -65,9 +65,6 @@ class SnowflakeConnection(BaseModel):
     paramstyle: Optional[str] = None
     application: Optional[str] = None
 
-    # Metrics config for this database. If it's missing, use the default
-    metricsConfig: Optional[MetricsConfig] = None
-
     @model_validator(mode="after")
     def validate_authentication(self):
         """Validate that either password or private key authentication is configured."""
@@ -90,7 +87,7 @@ class AxolotlConfig(BaseModel):
     """Top-level configuration for Axolotl."""
 
     connections: dict[str, SnowflakeConnection]
-    default_metrics_config: MetricsConfig
+    metrics_config: MetricsConfig
 
 
 def _substitute_env_vars(value: Any) -> Any:
@@ -146,9 +143,11 @@ def _parse_snowflake_connections(
 
     # Override metrics in each database entry if it doesn't exist
     for db_config in connection.databases.values():
-        if db_config.metrics is None:
-            db_config.metrics = default_metrics_config
+        if db_config.metrics_config is None:
+            print(f"using default metrics for {db_config}")
+            db_config.metrics_config = default_metrics_config
 
+    print(f"conn {connection}")
     return connection
 
 
@@ -207,7 +206,7 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
 
     return AxolotlConfig(
         connections=connections,
-        default_metrics_config=default_metrics_config,
+        metrics_config=default_metrics_config,
     )
 
 

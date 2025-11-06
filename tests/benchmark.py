@@ -72,7 +72,7 @@ def benchmark_schema(config: AxolotlConfig, connection_name: str, schema_name: s
                 }
             )
         },
-        default_metrics_config=config.default_metrics_config,
+        metrics_config=config.metrics_config,
     )
 
     detailed_results = []

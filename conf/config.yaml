@@ -3,7 +3,7 @@ metrics:
   max_threads: 10
   per_query_timeout_seconds: 60
   per_column_timeout_seconds: 60
-  per_run_timeout_seconds: 60
+  per_run_timeout_seconds: 300
   exclude_expensive_queries: false
 
 connections:
@@ -28,10 +28,9 @@ connections:
         metrics: # override metrics
           max_threads: 10
           per_query_timeout_seconds: 60
-          per_column_timeout_seconds: 60
-          per_run_timeout_seconds: 60
+          # per_run_timeout_seconds: 300  this doesn't make sense here
           exclude_expensive_queries: false
-          exclude_complex_queries: true
+          exclude_complex_queries: false
 
     # TODO: make this optional
     # schema: TPCH_SF10
