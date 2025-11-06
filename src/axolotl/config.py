@@ -144,10 +144,7 @@ def _parse_snowflake_connections(
     # Override metrics in each database entry if it doesn't exist
     for db_config in connection.databases.values():
         if db_config.metrics_config is None:
-            print(f"using default metrics for {db_config}")
             db_config.metrics_config = default_metrics_config
-
-    print(f"conn {connection}")
     return connection
 
 
