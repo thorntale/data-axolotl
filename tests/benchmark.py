@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from axolotl.snowflake_connection import SnowflakeConn, ColumnInfo
-from axolotl.config import AxolotlConfig, SnowflakeOptions, load_config
+from axolotl.config import AxolotlConfig, SnowflakeConnection, load_config
 
 
 def benchmark_column(conn: SnowflakeConn, column_info: ColumnInfo) -> List[Dict[str, Any]]:
@@ -65,14 +65,14 @@ def benchmark_schema(config: AxolotlConfig, connection_name: str, schema_name: s
     # Create a modified config for this specific schema
     schema_config = AxolotlConfig(
         connections={
-            connection_name: SnowflakeOptions(
+            connection_name: SnowflakeConnection(
                 **{
                     **config.connections[connection_name].model_dump(),
                     'include_schemas': [schema_name],
                 }
             )
         },
-        default_metrics_config=config.default_metrics_config,
+        metrics_config=config.metrics_config,
     )
 
     detailed_results = []
