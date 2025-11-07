@@ -8,7 +8,7 @@ import os
 import re
 import yaml
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from pydantic import BaseModel, model_validator
 
@@ -27,8 +27,8 @@ class Database(BaseModel):
     """Configuration for a single db."""
     database: str
 
-    include_schemas: Optional[list[str]] = []
-    exclude_schemas: Optional[list[str]] = ["INFORMATION_SCHEMA"]
+    include_schemas: Optional[List[str]] = []
+    exclude_schemas: Optional[List[str]] = ["INFORMATION_SCHEMA"]
     metrics_config: Optional[MetricsConfig] = None
 
 class SnowflakeConnection(BaseModel):
@@ -185,7 +185,7 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     default_metrics_config = MetricsConfig(**default_metrics_dict)
 
     # TODO: later, support conn types that aren't snowflake
-    connections: dict[str, SnowflakeConnection] = {}
+    connections: Dict[str, SnowflakeConnection] = {}
     connections_section = config.get("connections", {})
 
     for conn_name, conn_config in connections_section.items():
