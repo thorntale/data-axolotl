@@ -254,7 +254,6 @@ class SnowflakeConn:
             self.conn = snowflake.connector.connect(**conn_params)
 
         except Exception:
-            # TODO Don't print sensitive connection params
             self.console.print(
                 f"Failed to create snowflake connection: {connection_name}"
             )
@@ -424,16 +423,15 @@ class SnowflakeConn:
                 started_query = self.run_metric_query(queued_query)
                 if started_query.status == QueryStatus.STARTED:
                     running_queries[started_query.query_id] = started_query
-                    print(
+                    self.console.print(
                         f"Started ({started_query.query_id}): {started_query.fq_table_name}.{started_query.column_name} [{started_query.query_detail}]"
                     )
                 else:
                     # Query failed to start, skip it
-                    print(
+                    self.console.print(
                         f"Failed to start: {queued_query.fq_table_name}.{queued_query.column_name} [{queued_query.query_detail}]"
                     )
                 i += 1
-            time.sleep(1 / 1000)
 
     def snapshot(self, t_run_start: float) -> Iterator[Metric]:
         """
