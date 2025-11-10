@@ -19,7 +19,7 @@ class MetricsConfig(BaseModel):
     max_threads: int = 10
     per_query_timeout_seconds: int = 60
     per_column_timeout_seconds: int = 60
-    per_run_timeout_seconds: int = 300
+    per_database_timeout_seconds: int = 300
     exclude_expensive_queries: bool = False
     exclude_complex_queries: bool = False
 
@@ -87,6 +87,7 @@ class AxolotlConfig(BaseModel):
     """Top-level configuration for Axolotl."""
 
     connections: dict[str, SnowflakeConnection]
+    per_run_timeout_seconds: int = 300
     metrics_config: MetricsConfig
 
 
@@ -145,6 +146,9 @@ def _parse_snowflake_connections(
     for db_config in connection.databases.values():
         if db_config.metrics_config is None:
             db_config.metrics_config = default_metrics_config
+            print("using default metricsconfig")
+    for db_config in connection.databases.values():
+        print(db_config.metrics_config)
     return connection
 
 
@@ -176,7 +180,8 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     config = _substitute_env_vars(raw_config)
 
     # Parse default metrics configuration first
-    metrics_section = config.get("metrics", {})
+    metrics_section = config.get("metrics_config", {})
+    per_run_timeout_seconds = config.get("per_run_timeout_seconds", 600)
 
     # Extract default metrics, but exclude dicts (those are connection-specific overrides)
     default_metrics_dict = {
@@ -204,6 +209,7 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     return AxolotlConfig(
         connections=connections,
         metrics_config=default_metrics_config,
+        per_run_timeout_seconds=per_run_timeout_seconds
     )
 
 
