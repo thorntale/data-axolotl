@@ -50,7 +50,7 @@ class SnowflakeBenchmarkConn(SnowflakeConn):
         the result, returns a dict { metric_name : query duration}
         """
 
-        (fq_table_name, _, _, _) = column_info
+        (fq_table_name, _, _, _, _) = column_info
         res: Dict[str, float] = {}
 
         for metric_name, metric_query in query_columns.items():

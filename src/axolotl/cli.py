@@ -15,6 +15,8 @@ from .metric_set import MetricSet
 from .history_report import HistoryReport
 from .alert_report import AlertReport
 from .config import load_config
+from .live_run_console import live_run_console
+import traceback
 
 app = typer.Typer()
 
@@ -32,20 +34,20 @@ def run(
     state = StateDAO(state_conn)
 
     config = load_config(config_path)
-
     t_run_start = time.monotonic()
 
-    with state.make_run() as run_id:
-        typer.echo(f"Running {run_id}...")
+    with live_run_console() as console:
+        with state.make_run() as run_id:
+            console.print(f"Running {run_id}...")
 
-        for name in config.connections.keys():
-            with SnowflakeConn(config, name, run_id) as snowflake_conn:
-                for metric_list in snowflake_conn.snapshot(t_run_start):
-                    for m in metric_list:
+            for name in config.connections.keys():
+                with SnowflakeConn(config, name, run_id, console) as snowflake_conn:
+                    for m in snowflake_conn.snapshot(t_run_start):
                         try:
                             state.record_metric(m)
                         except Exception as e:
                             print(f"Error recording metric: {e}")
+                            print(traceback.format_exc())
                             raise
 
 

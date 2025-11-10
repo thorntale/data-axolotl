@@ -1,7 +1,7 @@
 from pathlib import Path
 import re
 import itertools
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, ContextManager, Callable
 from contextlib import contextmanager
 
 from rich.console import Console
@@ -54,7 +54,7 @@ class HistoryReport:
                 yield None
             self._print(noop)
 
-    def _print(self, setup_manager: contextmanager):
+    def _print(self, setup_manager: Callable[[str], ContextManager]):
         for table in sorted(self.metric_set.get_tracked_tables()):
             with setup_manager(table):
                 self._print_table_header(table)

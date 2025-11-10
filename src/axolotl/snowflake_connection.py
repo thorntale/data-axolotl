@@ -19,16 +19,19 @@ from typing import (
 
 import snowflake.connector
 from snowflake.connector import DictCursor
+from rich.console import Console
 
 from .config import AxolotlConfig, Database
 from .state_dao import Metric
+from .live_run_console import LiveConsole
+from .metric_query import QueryStatus, MetricQuery
 
 
-def to_string_array(items: List[str]) -> str:
+def to_string_array(items: List[str] | None) -> str:
     """
     takes ["a", "b", "c"] -> "('a', 'b', 'c')"
     """
-    return f"""('{ "', '".join(items)}')"""
+    return f"""('{ "', '".join(items or [])}')"""
 
 
 class SimpleDataType(Enum):
@@ -42,15 +45,6 @@ class SimpleDataType(Enum):
     UNSTRUCTURED = "unstructured"
     VECTOR = "vector"
     OTHER = "other"
-
-
-class QueryStatus(Enum):
-    """Status of a running query"""
-
-    QUEUED = "queued"
-    STARTED = "started"
-    DONE = "done"
-    ERROR = "error"
 
 
 class ColumnInfo(NamedTuple):
@@ -195,7 +189,13 @@ class SnowflakeConn:
     and schemas.
     """
 
-    def __init__(self, config: AxolotlConfig, connection_name: str, run_id: int):
+    def __init__(
+        self,
+        config: AxolotlConfig,
+        connection_name: str,
+        run_id: int,
+        console: Console | LiveConsole = Console(),
+    ):
         """
         Initialize a Snowflake connection.
 
@@ -204,6 +204,8 @@ class SnowflakeConn:
             connection_name: Name of the connection to use from config.connections
             run_id: Unique identifier for this snapshot run
         """
+        self.console = console
+
         if connection_name not in config.connections:
             raise ValueError(
                 f"Connection '{connection_name}' not found in config. "
@@ -213,7 +215,7 @@ class SnowflakeConn:
         # Store connection options and metrics config
         self.connection_options = config.connections[connection_name]
         self.metrics_config = config.metrics_config
-        self.per_run_timeout_seconds  = config.per_run_timeout_seconds  
+        self.per_run_timeout_seconds = config.per_run_timeout_seconds
 
         self.databases = self.connection_options.databases
         self.run_id = run_id
@@ -253,8 +255,10 @@ class SnowflakeConn:
 
         except Exception:
             # TODO Don't print sensitive connection params
-            print(f"Failed to create snowflake connection: {connection_name}")
-            print(traceback.format_exc())
+            self.console.print(
+                f"Failed to create snowflake connection: {connection_name}"
+            )
+            self.console.print(traceback.format_exc())
             raise
 
     def __enter__(self):
@@ -280,6 +284,7 @@ class SnowflakeConn:
         try:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute_async(metric_query.query)
+                assert cur.sfqid is not None
                 # Return updated MetricQuery with the query_id and STARTED status
                 return metric_query._replace(
                     query_id=cur.sfqid,
@@ -288,14 +293,14 @@ class SnowflakeConn:
                     status=QueryStatus.STARTED,
                 )
         except Exception:
-            print(f"Error executing query: {metric_query.query}")
-            print(traceback.format_exc())
+            self.console.print(f"Error executing query: {metric_query.query}")
+            self.console.print(traceback.format_exc())
             # Return updated MetricQuery with ERROR status
             return metric_query._replace(status=QueryStatus.ERROR)
 
     def _snapshot_database(
         self, db_name: str, database: Database, t_run_timeout: float
-    ) -> List[Metric]:
+    ) -> Iterator[Metric]:
         all_column_infos: List[ColumnInfo] = []
 
         t_db_start = time.monotonic()
@@ -307,8 +312,7 @@ class SnowflakeConn:
         print(
             f"Found {len(table_names)} tables in {round(t_tablescan-t_db_start, 2)} seconds in {db_name}({database.database}). Enumerating columns..."
         )
-        metrics.extend(table_metrics)
-
+        yield from table_metrics
         all_column_infos.extend(self.list_columns(database))
 
         print(f"Generating queries for {len(all_column_infos)} columns...")
@@ -325,77 +329,90 @@ class SnowflakeConn:
 
         all_metric_queries.sort(key=query_priority)
 
-        print(
+        self.console.print(
             f"Snapshotting {len(all_metric_queries)} queries across {len(self.databases)} databases..."
         )
         num_queries = len(all_metric_queries)
         i = 0  # Index into all_metric_queries
-        j = 0  # Count of completed queries
+        num_successful = 0  # Count of successful queries
+        num_failed = 0  # Count of failed queries
 
-        running_queries: Dict[str, MetricQuery] = (
-            {}
-        )  # Track queries currently in flight
+         # Track queries currently in flight
+        running_queries: Dict[str, MetricQuery] = {}
+
+        def update():
+            if isinstance(self.console, LiveConsole):
+                self.console.update(
+                    num_successful,
+                    num_failed,
+                    num_queries,
+                    list(running_queries.values()),
+                )
 
         while True:
+            update()
             if len(running_queries) == 0 and i == num_queries:
-                return metrics
+                yield from metrics
+                return
 
-            # check if any running queries are done,
-            removed: List[str] = []
-            for qid, rq in running_queries.items():
+            # check if any running queries are done
+            for qid, rq in list(running_queries.items()):
                 if not self.conn.is_still_running(self.conn.get_query_status(qid)):
                     try:
                         with self.conn.cursor(DictCursor) as cur:
                             cur.get_results_from_sfqid(qid)
                             results = cur.fetchone()
+                            assert results
                             # Use the result_extractor from the MetricQuery
                             extracted_metrics = rq.result_extractor(
-                                self.run_id, rq.fq_table_name, rq.column_name, results
+                                self.run_id,
+                                rq.fq_table_name,
+                                rq.column_name,
+                                results,
                             )
                             metrics.extend(extracted_metrics)
                             # Update status to DONE
-                            running_queries[qid] = rq._replace(status=QueryStatus.DONE)
-                            print(
+                            del running_queries[qid]
+                            self.console.print(
                                 f"Done ({qid}): {rq.fq_table_name}.{rq.column_name} [{rq.query_detail}]"
                             )
-                            removed.append(qid)
-                            j += 1
+                            num_successful += 1
                     except Exception:
-                        print(
+                        self.console.print(
                             f"Error processing results for ({qid}): {rq.fq_table_name}.{rq.column_name} [{rq.query_detail}]"
                         )
-                        print(traceback.format_exc())
+                        self.console.print(traceback.format_exc())
                         # Update status to ERROR
-                        running_queries[qid] = rq._replace(status=QueryStatus.ERROR)
-                        removed.append(qid)
+                        del running_queries[qid]
+                        num_failed += 1
+                    finally:
+                        break  # stop finishing and skip to enqueueing
 
                 elif rq.timeout_at < time.monotonic():
                     # if we're done with this query, yoink it
-                    with self.conn.cursor() as cur:
-                        cur.execute(f"SELECT SYSTEM$CANCEL_QUERY('{rq.query_id}')")
+                    with self.conn.cursor() as cur2:
+                        cur2.execute(f"SELECT SYSTEM$CANCEL_QUERY('{rq.query_id}')")
                     # Update status to ERROR for timeout
-                    running_queries[qid] = rq._replace(status=QueryStatus.ERROR)
-                    removed.append(qid)
-                    print(
+                    del running_queries[qid]
+                    num_failed += 1
+                    self.console.print(
                         f"Timed out: {rq.fq_table_name}.{rq.column_name} [{rq.query_detail}]"
                     )
-
-            # Clear our tracking dict; couldn't do that inside the loop
-            for r in removed:
-                del running_queries[r]
+                    break  # stop finishing and skip to enqueueing
+            else:
+                # only sleep if we didn't finish any queries
+                time.sleep(1)
 
             # Check run-level timeout
-            t_check = time.monotonic()
-            if t_run_timeout < t_check:
-                print(
-                    f"Timed out in {self.per_run_timeout_seconds} seconds: returning early having completed {j}/{num_queries} queries"
+            if t_run_timeout < time.monotonic():
+                self.console.print(
+                    f"Timed out in {self.default_metrics_config.per_run_timeout_seconds} seconds: returning early having completed {num_successful}/{num_queries} queries"
                 )
-                return metrics
-            if t_db_timeout < t_check:
-                print(
-                    f"Timed out for {db_name} in {database.metrics_config.per_database_timeout_seconds} seconds: returning early having completed {j}/{num_queries} queries"
-                )
-                return metrics
+                num_failed += len(running_queries)
+                running_queries = {}
+                update()
+                yield from metrics
+                return
 
             # Fill our headroom with more queries
             while (
@@ -418,7 +435,7 @@ class SnowflakeConn:
                 i += 1
             time.sleep(1 / 1000)
 
-    def snapshot(self, t_run_start: float) -> Iterator[List[Metric]]:
+    def snapshot(self, t_run_start: float) -> Iterator[Metric]:
         """
         Capture metrics for all tables in the configured databases/schemas, both
         table-level and column-level for all tables
@@ -430,18 +447,14 @@ class SnowflakeConn:
             List of Metric objects containing all collected metrics
         """
 
-        t_run_timeout = (
-            t_run_start + self.per_run_timeout_seconds
-        )
+        t_run_timeout = t_run_start + self.per_run_timeout_seconds
 
         for db_name, database in self.databases.items():
-            yield self._snapshot_database(db_name, database, t_run_timeout)
+            yield from self._snapshot_database(db_name, database, t_run_timeout)
             if time.monotonic() > t_run_timeout:
-                print(
-                    f"Timed out in {self.per_run_timeout_seconds} seconds"
-                )
+                print(f"Timed out in {self.per_run_timeout_seconds} seconds")
                 return
-        
+
         print(f"Finished in {round(time.monotonic()-t_run_start, 2)} seconds")
 
     def _simple_queries(
@@ -460,6 +473,7 @@ class SnowflakeConn:
             "null_pct": f'100.0 * "null_count" / "row_count"',
         }
 
+        assert column_info.database.metrics_config
         if not column_info.database.metrics_config.exclude_expensive_queries:
             queries.update(
                 {
@@ -480,6 +494,7 @@ class SnowflakeConn:
             )
 
         elif data_type_simple == SimpleDataType.STRING:
+            assert column_info.database.metrics_config
             if not column_info.database.metrics_config.exclude_expensive_queries:
                 queries.update(
                     {
@@ -539,10 +554,12 @@ class SnowflakeConn:
                 fq_table_name=fq_table_name,
                 column_name=column_name,
                 query_detail="simple_metrics",
+                result_extractor=extract_simple_metrics,
             )
         )
 
         # 2. Generate complex queries based on data type (if not excluded)
+        assert database.metrics_config
         if not database.metrics_config.exclude_complex_queries:
             if data_type_simple == SimpleDataType.NUMERIC:
                 # Percentiles query
@@ -820,12 +837,12 @@ class SnowflakeConn:
         """
         column_info_arr: List[ColumnInfo] = []
 
-        if len(database.include_schemas) > 0:
-            print(database.include_schemas)
+        if len(database.include_schemas or []) > 0:
+            self.console.print(database.include_schemas)
             table_schema_clause = (
                 f"WHERE TABLE_SCHEMA IN {to_string_array(database.include_schemas)}"
             )
-        elif len(database.exclude_schemas) > 0:
+        elif len(database.exclude_schemas or []) > 0:
             table_schema_clause = (
                 f"WHERE TABLE_SCHEMA NOT IN {to_string_array(database.exclude_schemas)}"
             )
@@ -877,12 +894,12 @@ class SnowflakeConn:
         table_names = []
         fq_table_names = []
 
-        if len(database.include_schemas) > 0:
-            print(database.include_schemas)
+        if len(database.include_schemas or []) > 0:
+            self.console.print(database.include_schemas)
             table_schema_clause = (
                 f"WHERE TABLE_SCHEMA IN {to_string_array(database.include_schemas)}"
             )
-        elif len(database.exclude_schemas) > 0:
+        elif len(database.exclude_schemas or []) > 0:
             table_schema_clause = (
                 f"WHERE TABLE_SCHEMA NOT IN {to_string_array(database.exclude_schemas)}"
             )
@@ -908,8 +925,8 @@ class SnowflakeConn:
                 cur.execute(q)
 
             except Exception:
-                print("Error running table scan query")
-                print(traceback.format_exc())
+                self.console.print("Error running table scan query")
+                self.console.print(traceback.format_exc())
                 raise
 
             for (
@@ -973,9 +990,10 @@ class SnowflakeConn:
                 """
                 )
                 results = cur.fetchone()
+                assert results
             except Exception:
-                print("Error getting table update times")
-                print(traceback.format_exc())
+                self.console.print("Error getting table update times")
+                self.console.print(traceback.format_exc())
                 raise
 
             metrics += [

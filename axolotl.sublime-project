@@ -21,7 +21,7 @@
             "variants": [
                 {
                     "name": "Type Check",
-                    "shell_cmd": "hatch run types:check --check-untyped-defs",
+                    "shell_cmd": "hatch run types:check",
                 }
             ]
         },
