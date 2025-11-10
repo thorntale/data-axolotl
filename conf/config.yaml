@@ -1,9 +1,11 @@
-metrics:
+
+per_run_timeout_seconds: 600
+
+metrics_config:
   # Default timeouts and metric collection configs. Can be overridden per connection.
   max_threads: 10
   per_query_timeout_seconds: 60
   per_column_timeout_seconds: 60
-  per_run_timeout_seconds: 600
   per_database_timeout_seconds: 120
   exclude_expensive_queries: false
 
@@ -26,28 +28,9 @@ connections:
         database: SNOWFLAKE_SAMPLE_DATA
         include_schemas:
           - TPCH_SF1
-        metrics: # override metrics
+        metrics_config: # override metrics
           max_threads: 10
-          per_query_timeout_seconds: 60
+          per_query_timeout_seconds: 300
           exclude_expensive_queries: false
           exclude_complex_queries: false
-          per_database_timeout_seconds: 300
-
-    # TODO: make this optional
-    # schema: TPCH_SF10
-    #- TPCH_SF10
-#  climate:
-#    type: snowflake
-#    # If the type is snowflake, this matches snowflake's connection.toml entries
-#    account: IGQTQKI-QK48619
-#    user: fred_the_sasquatch_ro
-#    # $ENVVAR is the syntax to get from environment variable
-#    # password: $SASQUATCH_PASSWORD
-#    authenticator: SNOWFLAKE_JWT
-#    private_key_file: conf/rsa_key_snowflake.p8
-#    private_key_file_pwd: $SNOWFLAKE_PRIVATE_KEY_PASSWORD
-#    warehouse: COMPUTE_WH
-#    database: GLOBAL_WEATHER__CLIMATE_DATA_FOR_BI
-
-# if neither include_schemas nor exclude_schemas are given, scan everything
-# but INFORMATION_SCHEMA
+          per_database_timeout_seconds: 600

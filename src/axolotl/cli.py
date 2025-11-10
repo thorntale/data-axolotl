@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Optional
 from typing import List
 from typing_extensions import Annotated
+import time
 
 import typer
 from tabulate import tabulate
@@ -32,12 +33,14 @@ def run(
 
     config = load_config(config_path)
 
+    t_run_start = time.monotonic()
+
     with state.make_run() as run_id:
         typer.echo(f"Running {run_id}...")
 
         for name in config.connections.keys():
             with SnowflakeConn(config, name, run_id) as snowflake_conn:
-                for metric_list in snowflake_conn.snapshot():
+                for metric_list in snowflake_conn.snapshot(t_run_start):
                     for m in metric_list:
                         try:
                             state.record_metric(m)

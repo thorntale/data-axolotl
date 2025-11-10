@@ -212,7 +212,8 @@ class SnowflakeConn:
 
         # Store connection options and metrics config
         self.connection_options = config.connections[connection_name]
-        self.default_metrics_config = config.metrics_config
+        self.metrics_config = config.metrics_config
+        self.per_run_timeout_seconds  = config.per_run_timeout_seconds  
 
         self.databases = self.connection_options.databases
         self.run_id = run_id
@@ -247,7 +248,6 @@ class SnowflakeConn:
                 encryption_algorithm=serialization.NoEncryption(),
             )
             conn_params["private_key"] = pkb
-
         try:
             self.conn = snowflake.connector.connect(**conn_params)
 
@@ -284,7 +284,7 @@ class SnowflakeConn:
                 return metric_query._replace(
                     query_id=cur.sfqid,
                     timeout_at=time.monotonic()
-                    + self.default_metrics_config.per_query_timeout_seconds,
+                    + self.metrics_config.per_query_timeout_seconds,
                     status=QueryStatus.STARTED,
                 )
         except Exception:
@@ -388,7 +388,7 @@ class SnowflakeConn:
             t_check = time.monotonic()
             if t_run_timeout < t_check:
                 print(
-                    f"Timed out in {self.default_metrics_config.per_run_timeout_seconds} seconds: returning early having completed {j}/{num_queries} queries"
+                    f"Timed out in {self.per_run_timeout_seconds} seconds: returning early having completed {j}/{num_queries} queries"
                 )
                 return metrics
             if t_db_timeout < t_check:
@@ -399,7 +399,7 @@ class SnowflakeConn:
 
             # Fill our headroom with more queries
             while (
-                self.default_metrics_config.max_threads > len(running_queries)
+                self.metrics_config.max_threads > len(running_queries)
                 and i < num_queries
             ):
                 queued_query = all_metric_queries[i]
@@ -416,30 +416,29 @@ class SnowflakeConn:
                         f"Failed to start: {queued_query.fq_table_name}.{queued_query.column_name} [{queued_query.query_detail}]"
                     )
                 i += 1
-            time.sleep(1)
+            time.sleep(1 / 1000)
 
-    def snapshot(self) -> Iterator[List[Metric]]:
+    def snapshot(self, t_run_start: float) -> Iterator[List[Metric]]:
         """
         Capture metrics for all tables in the configured databases/schemas, both
         table-level and column-level for all tables
 
         Args:
-            run_id: Unique identifier for this snapshot run
+            t_run_start: Time at which this run started. Used for timing out
 
         Returns:
             List of Metric objects containing all collected metrics
         """
 
-        t_run_start = time.monotonic()
         t_run_timeout = (
-            t_run_start + self.default_metrics_config.per_run_timeout_seconds
+            t_run_start + self.per_run_timeout_seconds
         )
 
         for db_name, database in self.databases.items():
             yield self._snapshot_database(db_name, database, t_run_timeout)
             if time.monotonic() > t_run_timeout:
                 print(
-                    f"Timed out in {self.default_metrics_config.per_run_timeout_seconds} seconds"
+                    f"Timed out in {self.per_run_timeout_seconds} seconds"
                 )
                 return
         
