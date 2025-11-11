@@ -183,7 +183,7 @@ def validate_key(key_path: Path, password: Optional[str] = None) -> bool:
             password=password.encode() if password is not None else None,
         )
         return True
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         # TypeError is raised if a password is required
         return False
     return False

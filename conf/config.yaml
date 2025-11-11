@@ -27,7 +27,7 @@ connections:
       snowflake_sample_data:
         database: SNOWFLAKE_SAMPLE_DATA
         include_schemas:
-          - TPCH_SF1
+          - TPCH_SF100
         metrics_config: # override metrics
           max_threads: 10
           per_query_timeout_seconds: 300
