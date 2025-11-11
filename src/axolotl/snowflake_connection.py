@@ -3,8 +3,7 @@ import json
 import traceback
 
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import concurrent.futures 
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from typing import (
     NamedTuple,
@@ -26,7 +25,6 @@ from .config import AxolotlConfig, Database
 from .state_dao import Metric
 from .live_run_console import LiveConsole
 from .metric_query import QueryStatus, MetricQuery
-
 
 def to_string_array(items: List[str] | None) -> str:
     """
@@ -88,25 +86,6 @@ def extract_simple_metrics(
             )
         )
     return metrics
-
-
-class MetricQuery(NamedTuple):
-    # Query execution details
-    query: str  # SQL query string to execute
-    query_id: str  # Snowflake query ID (set after execution)
-    timeout_at: float  # monotonic time at which to timeout this query
-    status: QueryStatus  # Current status of the query
-
-    # debug info
-    fq_table_name: str
-    column_name: str
-    query_detail: str
-
-    # query results into Metric objects
-    # Takes run_id, fq_table_name, column_name, and dict of query results, returns list of Metrics
-    result_extractor: Callable[[int, str, str, Dict[str, Any]], List[Metric]] = (
-        extract_simple_metrics
-    )
 
 
 SNOWFLAKE_NUMERIC_TYPES = [
@@ -273,13 +252,13 @@ class SnowflakeConn:
     def run_metric_query(self, metric_query: MetricQuery) -> MetricQuery:
         """
         Execute a MetricQuery asynchronously and return an updated MetricQuery with
-        the query_id, updated timeout_at, and status set to STARTED.
+        the query_id and status set to STARTED.
 
         Args:
             metric_query: MetricQuery with query string and status=QUEUED
 
         Returns:
-            Updated MetricQuery with query_id, timeout_at, and status=STARTED or ERROR
+            Updated MetricQuery with query_id, and status=STARTED or ERROR
         """
         try:
             with self.conn.cursor(DictCursor) as cur:
@@ -288,8 +267,6 @@ class SnowflakeConn:
                 # Return updated MetricQuery with the query_id and STARTED status
                 return metric_query._replace(
                     query_id=cur.sfqid,
-                    timeout_at=time.monotonic() + 10,
-                    #+ self.metrics_config.per_query_timeout_seconds,
                     status=QueryStatus.STARTED,
                 )
         except Exception:
@@ -302,12 +279,11 @@ class SnowflakeConn:
         self, db_name: str, database: Database, t_run_timeout: float
     ) -> Iterator[Metric]:
         all_column_infos: List[ColumnInfo] = []
-
         t_db_start = time.monotonic()
-        t_db_timeout = t_db_start + database.metrics_config.per_database_timeout_seconds
+
         (table_metrics, table_names) = self.scan_table_level_metrics(database)
         t_tablescan = time.monotonic()  ## Time it took to scan the table metrics
-        print(
+        self.console.print(
             f"Found {len(table_names)} tables in {round(t_tablescan-t_db_start, 2)} seconds in {db_name}({database.database}). Enumerating columns..."
         )
         yield from table_metrics
@@ -331,36 +307,44 @@ class SnowflakeConn:
             f"Snapshotting {len(all_metric_queries)} queries across {len(self.databases)} databases..."
         )
         num_queries = len(all_metric_queries)
-        in_progress = set() # To track items currently being processed
         num_successful = 0  # Count of successful queries
         num_failed = 0  # Count of failed queries
+
+        # FIXME: this is immoral and depraved. We should be locking this.
+        running_queries: Set[MetricQuery] = set() 
+
         def update():
             if isinstance(self.console, LiveConsole):
                 self.console.update(
                     num_successful,
                     num_failed,
                     num_queries,
-                    list(in_progress),
+                    list(running_queries)
                 )
 
         def run_and_wait(metric_query: MetricQuery) -> Tuple[MetricQuery, List[Metric]]:
+            query_timeout_at = time.monotonic() + database.metrics_config.per_query_timeout_seconds
+
             rq = self.run_metric_query(metric_query)
             qid = rq.query_id
             assert qid
+
+            running_queries.add(rq)
             if rq.status != QueryStatus.STARTED:
                 # Query failed to start
                 self.console.print(
                     f"Failed to start: {metric_query.fq_table_name}.{metric_query.column_name} [{metric_query.query_detail}]"
                 )
+                running_queries.remove(rq)
                 return rq._replace(status=QueryStatus.ERROR), []
 
             while not self.conn.is_still_running(
                 self.conn.get_query_status(rq.query_id)
             ):
                 time.sleep(0.1)
-                if time.monotonic() < rq.timeout_at:
+                if time.monotonic() < query_timeout_at:
                     self.console.print(
-                        f"Timed out: {metric_query.fq_table_name}.{metric_query.column_name} ({metric_query.query_detail})"
+                        f"Timed out: {metric_query.fq_table_name}.{metric_query.column_name} [{metric_query.query_detail}]"
                     )
                     return rq._replace(status=QueryStatus.ERROR), []
 
@@ -383,173 +367,24 @@ class SnowflakeConn:
                 )
                 self.console.print(traceback.format_exc())
                 return rq._replace(status=QueryStatus.ERROR), []
+            finally: 
+                running_queries.remove(rq)
+        
+
+        # subtract the time we took to query the table stats and do setup, and
+        # that's what we'll give the executor to run the column queries. 
+        db_timeout =  database.metrics_config.per_database_timeout_seconds - (time.monotonic() - t_db_start)
 
         with ThreadPoolExecutor(max_workers=database.metrics_config.max_threads) as executor:
-            futures = {}
-
-            for i in range(num_queries):
-                mq = all_metric_queries[i]
-                future = executor.submit(run_and_wait, all_metric_queries[i])
-                futures[future] = mq 
-                in_progress.add(mq )
-
-            for future in concurrent.futures.as_completed(futures, 600):
-                running_query = futures[future]
-                in_progress.remove(running_query)
-                try:
-                    rq, results = future.result()
-                    #self.console.print( f"Done ({rq.query_id}): {rq.fq_table_name}.{rq.column_name} ({rq.query_detail})" )
-                    if rq.status == QueryStatus.DONE: 
-                        num_successful += 1
-                    else: 
-                        num_failed += 1
-                    yield from results
-
-                except Exception as exc:
-                    self.console.print(traceback.format_exc())
+            for rq, results in executor.map(run_and_wait, all_metric_queries, timeout=db_timeout ):
+                if rq.status == QueryStatus.DONE:
+                    num_successful += 1
+                else: 
                     num_failed += 1
 
-                finally: 
-                    update()
-                
-        return
-
-
-
-    def _snapshot_database(
-        self, db_name: str, database: Database, t_run_timeout: float
-    ) -> Iterator[Metric]:
-        all_column_infos: List[ColumnInfo] = []
-
-        t_db_start = time.monotonic()
-        t_db_timeout = t_db_start + database.metrics_config.per_database_timeout_seconds
-        metrics: List[Metric] = []
-
-        (table_metrics, table_names) = self.scan_table_level_metrics(database)
-        t_tablescan = time.monotonic()  ## Time it took to scan the table metrics
-        print(
-            f"Found {len(table_names)} tables in {round(t_tablescan-t_db_start, 2)} seconds in {db_name}({database.database}). Enumerating columns..."
-        )
-        yield from table_metrics
-        all_column_infos.extend(self.list_columns(database))
-
-        print(f"Generating queries for {len(all_column_infos)} columns...")
-        all_metric_queries: List[MetricQuery] = []
-        for c_info in all_column_infos:
-            all_metric_queries.extend(self._generate_queries(c_info))
-
-        def query_priority(mq: MetricQuery) -> int:
-            """Return priority order: lower number = higher priority"""
-            if "histogram" in mq.query_detail or "percentile" in mq.query_detail:
-                return 0  # High priority
-            else:
-                return 1  # Normal priority (simple metrics)
-
-        all_metric_queries.sort(key=query_priority)
-
-        self.console.print(
-            f"Snapshotting {len(all_metric_queries)} queries across {len(self.databases)} databases..."
-        )
-        num_queries = len(all_metric_queries)
-        i = 0  # Index into all_metric_queries
-        num_successful = 0  # Count of successful queries
-        num_failed = 0  # Count of failed queries
-
-        # Track queries currently in flight
-        running_queries: Dict[str, MetricQuery] = {}
-
-        def update():
-            if isinstance(self.console, LiveConsole):
-                self.console.update(
-                    num_successful,
-                    num_failed,
-                    num_queries,
-                )
-
-        while True:
-            update()
-            if len(running_queries) == 0 and i == num_queries:
-                yield from metrics
-                return
-
-            # check if any running queries are done
-            for qid, rq in list(running_queries.items()):
-                if not self.conn.is_still_running(self.conn.get_query_status(qid)):
-                    try:
-                        with self.conn.cursor(DictCursor) as cur:
-                            cur.get_results_from_sfqid(qid)
-                            results = cur.fetchone()
-                            assert results
-                            # Use the result_extractor from the MetricQuery
-                            extracted_metrics = rq.result_extractor(
-                                self.run_id,
-                                rq.fq_table_name,
-                                rq.column_name,
-                                results,
-                            )
-                            metrics.extend(extracted_metrics)
-                            # Update status to DONE
-                            del running_queries[qid]
-                            self.console.print(
-                                f"Done ({qid}): {rq.fq_table_name}.{rq.column_name} [{rq.query_detail}]"
-                            )
-                            num_successful += 1
-                    except Exception:
-                        self.console.print(
-                            f"Error processing results for ({qid}): {rq.fq_table_name}.{rq.column_name} [{rq.query_detail}]"
-                        )
-                        self.console.print(traceback.format_exc())
-                        # Update status to ERROR
-                        del running_queries[qid]
-                        num_failed += 1
-                    finally:
-                        break  # stop finishing and skip to enqueueing
-
-                elif rq.timeout_at < time.monotonic():
-                    # if we're done with this query, yoink it
-                    with self.conn.cursor() as cur2:
-                        cur2.execute(f"SELECT SYSTEM$CANCEL_QUERY('{rq.query_id}')")
-                    # Update status to ERROR for timeout
-                    del running_queries[qid]
-                    num_failed += 1
-                    self.console.print(
-                        f"Timed out: {rq.fq_table_name}.{rq.column_name} ({rq.query_detail})"
-                    )
-                    break  # stop finishing and skip to enqueueing
-            else:
-                # only sleep if we didn't finish any queries
-                time.sleep(1)
-
-            # Check run-level timeout
-            if t_run_timeout < time.monotonic():
-                self.console.print(
-                    f"Timed out in {self.default_metrics_config.per_run_timeout_seconds} seconds: returning early having completed {num_successful}/{num_queries} queries"
-                )
-                num_failed += len(running_queries)
-                running_queries = {}
                 update()
-                yield from metrics
-                return
-
-            # Fill our headroom with more queries
-            while (
-                self.metrics_config.max_threads > len(running_queries)
-                and i < num_queries
-            ):
-                queued_query = all_metric_queries[i]
-                # Execute the query using run_metric_query
-                started_query = self.run_metric_query(queued_query)
-                if started_query.status == QueryStatus.STARTED:
-                    running_queries[started_query.query_id] = started_query
-                    self.console.print(
-                        f"Started ({started_query.query_id}): {started_query.fq_table_name}.{started_query.column_name} [{started_query.query_detail}]"
-                    )
-                else:
-                    # Query failed to start, skip it
-                    self.console.print(
-                        f"Failed to start: {queued_query.fq_table_name}.{queued_query.column_name} [{queued_query.query_detail}]"
-                    )
-                i += 1
+                yield from results
+        return
 
     def snapshot(self, t_run_start: float) -> Iterator[Metric]:
         """
@@ -666,7 +501,6 @@ class SnowflakeConn:
             MetricQuery(
                 query=simple_query,
                 query_id="",
-                timeout_at=0.0,
                 status=QueryStatus.QUEUED,
                 fq_table_name=fq_table_name,
                 column_name=column_name,
@@ -726,7 +560,6 @@ class SnowflakeConn:
                     MetricQuery(
                         query=percentile_query,
                         query_id="",
-                        timeout_at=0.0,
                         status=QueryStatus.QUEUED,
                         fq_table_name=fq_table_name,
                         column_name=column_name,
@@ -814,7 +647,6 @@ class SnowflakeConn:
                     MetricQuery(
                         query=histogram_query,
                         query_id="",
-                        timeout_at=0.0,
                         status=QueryStatus.QUEUED,
                         fq_table_name=fq_table_name,
                         column_name=column_name,
@@ -933,7 +765,6 @@ class SnowflakeConn:
                     MetricQuery(
                         query=histogram_query,
                         query_id="",
-                        timeout_at=0.0,
                         status=QueryStatus.QUEUED,
                         fq_table_name=fq_table_name,
                         column_name=column_name,
@@ -955,7 +786,6 @@ class SnowflakeConn:
         column_info_arr: List[ColumnInfo] = []
 
         if len(database.include_schemas or []) > 0:
-            self.console.print(database.include_schemas)
             table_schema_clause = (
                 f"WHERE TABLE_SCHEMA IN {to_string_array(database.include_schemas)}"
             )
@@ -1012,7 +842,6 @@ class SnowflakeConn:
         fq_table_names = []
 
         if len(database.include_schemas or []) > 0:
-            self.console.print(database.include_schemas)
             table_schema_clause = (
                 f"WHERE TABLE_SCHEMA IN {to_string_array(database.include_schemas)}"
             )
