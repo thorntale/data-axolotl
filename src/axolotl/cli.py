@@ -2,13 +2,13 @@ from pathlib import Path
 from typing import Optional
 from typing import List
 from typing_extensions import Annotated
+from rich.markup import escape
+from rich.console import Console
 import time
 
 import typer
 from tabulate import tabulate
-from .state_connection import (
-    get_conn,
-)
+from .state_connection import get_conn
 from .snowflake_connection import SnowflakeConn
 from .state_dao import StateDAO
 from .metric_set import MetricSet
@@ -16,6 +16,7 @@ from .history_report import HistoryReport
 from .alert_report import AlertReport
 from .config import load_config
 from .live_run_console import live_run_console
+from .generate_config_interactive import generate_config_interactive
 import traceback
 
 app = typer.Typer()
@@ -23,13 +24,27 @@ app = typer.Typer()
 
 @app.command()
 def run(
-    config_path: Annotated[str, typer.Option(prompt=True)],
+    config_path: Annotated[Optional[Path], typer.Option(help="The run configuration file. Defaults to './config.yaml'")] = None,
 ):
     """
     Execute a new run. Takes a --config path/to/config.yaml
     """
+    console = Console()
 
-    typer.echo("Running...")
+    if not config_path:
+        config_path = Path("./config.yaml")
+        if not config_path.is_file():
+            # no config provided, and no config at default location.
+            success = generate_config_interactive(config_path)
+            if not success:
+                console.print(f"Config generation aborted. Please specify a valid '--config-path', or place a config at './config.yaml'.")
+                raise typer.Exit(code=1)
+    else:
+        if not config_path.is_file():
+            # config provided, but does not exist.
+            console.print(f"Could not find config file [red]{escape(str(config_path))}[/red].\nPlease specify a valid '--config-path', or run with no config path to generate a config interactively.")
+            raise typer.Exit(code=1)
+
     state_conn = get_conn()
     state = StateDAO(state_conn)
 
@@ -38,7 +53,7 @@ def run(
 
     with live_run_console() as console:
         with state.make_run() as run_id:
-            console.print(f"Running {run_id}...")
+            console.print(f"Starting run #{run_id}...")
 
             for name in config.connections.keys():
                 with SnowflakeConn(config, name, run_id, console) as snowflake_conn:

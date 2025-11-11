@@ -40,7 +40,7 @@ class SnowflakeConnection(BaseModel):
     # Required fields
     user: str
     account: str
-    warehouse: str
+    warehouse: Optional[str] = None
 
     # Password authentication (mutually exclusive with private key auth)
     password: Optional[str] = None
@@ -146,6 +146,9 @@ def _parse_snowflake_connections(
     for db_config in connection.databases.values():
         if db_config.metrics_config is None:
             db_config.metrics_config = default_metrics_config
+            # print("using default metricsconfig")
+    # for db_config in connection.databases.values():
+    #     print(db_config.metrics_config)
     return connection
 
 
