@@ -15,6 +15,7 @@ class MetricQuery(NamedTuple):
     # Query execution details
     query: str  # SQL query string to execute
     query_id: str  # Snowflake query ID (set after execution)
+    timeout_at: float  # monotonic time at which to timeout this query
     status: QueryStatus  # Current status of the query
 
     # debug info

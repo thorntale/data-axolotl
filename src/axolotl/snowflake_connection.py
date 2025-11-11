@@ -26,6 +26,7 @@ from .state_dao import Metric
 from .live_run_console import LiveConsole
 from .metric_query import QueryStatus, MetricQuery
 
+
 def to_string_array(items: List[str] | None) -> str:
     """
     takes ["a", "b", "c"] -> "('a', 'b', 'c')"
@@ -249,24 +250,28 @@ class SnowflakeConn:
         # Return None to propagate any exceptions
         return None
 
-    def run_metric_query(self, metric_query: MetricQuery) -> MetricQuery:
+    def run_metric_query(
+        self, metric_query: MetricQuery, per_query_timeout: float
+    ) -> MetricQuery:
         """
         Execute a MetricQuery asynchronously and return an updated MetricQuery with
         the query_id and status set to STARTED.
 
         Args:
             metric_query: MetricQuery with query string and status=QUEUED
+            per_query_timeout: float in seconds indicating how long this query may take
 
         Returns:
-            Updated MetricQuery with query_id, and status=STARTED or ERROR
+            Updated MetricQuery with query_id, timeout_at, and status=STARTED or ERROR
         """
         try:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute_async(metric_query.query)
                 assert cur.sfqid is not None
-                # Return updated MetricQuery with the query_id and STARTED status
+                # Return updated MetricQuery with the query_id, timeout_at, and STARTED status
                 return metric_query._replace(
                     query_id=cur.sfqid,
+                    timeout_at=time.monotonic() + per_query_timeout,
                     status=QueryStatus.STARTED,
                 )
         except Exception:
@@ -284,7 +289,7 @@ class SnowflakeConn:
         (table_metrics, table_names) = self.scan_table_level_metrics(database)
         t_tablescan = time.monotonic()  ## Time it took to scan the table metrics
         self.console.print(
-            f"Found {len(table_names)} tables in {round(t_tablescan-t_db_start, 2)} seconds in {db_name}({database.database}). Enumerating columns..."
+            f"Found {len(table_names)} tables in {round(t_tablescan-t_db_start, 2)} seconds in {db_name} ({database.database}). Enumerating columns..."
         )
         yield from table_metrics
 
@@ -311,21 +316,19 @@ class SnowflakeConn:
         num_failed = 0  # Count of failed queries
 
         # FIXME: this is immoral and depraved. We should be locking this.
-        running_queries: Set[MetricQuery] = set() 
+        running_queries: Set[MetricQuery] = set()
 
         def update():
             if isinstance(self.console, LiveConsole):
                 self.console.update(
-                    num_successful,
-                    num_failed,
-                    num_queries,
-                    list(running_queries)
+                    num_successful, num_failed, num_queries, list(running_queries)
                 )
 
         def run_and_wait(metric_query: MetricQuery) -> Tuple[MetricQuery, List[Metric]]:
-            query_timeout_at = time.monotonic() + database.metrics_config.per_query_timeout_seconds
 
-            rq = self.run_metric_query(metric_query)
+            rq = self.run_metric_query(
+                metric_query, database.metrics_config.per_query_timeout_seconds
+            )
             qid = rq.query_id
             assert qid
 
@@ -342,7 +345,7 @@ class SnowflakeConn:
                 self.conn.get_query_status(rq.query_id)
             ):
                 time.sleep(0.1)
-                if time.monotonic() < query_timeout_at:
+                if time.monotonic() < metric_query.timeout_at:
                     self.console.print(
                         f"Timed out: {metric_query.fq_table_name}.{metric_query.column_name} [{metric_query.query_detail}]"
                     )
@@ -367,19 +370,24 @@ class SnowflakeConn:
                 )
                 self.console.print(traceback.format_exc())
                 return rq._replace(status=QueryStatus.ERROR), []
-            finally: 
+            finally:
                 running_queries.remove(rq)
-        
 
         # subtract the time we took to query the table stats and do setup, and
-        # that's what we'll give the executor to run the column queries. 
-        db_timeout =  database.metrics_config.per_database_timeout_seconds - (time.monotonic() - t_db_start)
+        # that's what we'll give the executor to run the column queries.
+        db_timeout = database.metrics_config.per_database_timeout_seconds - (
+            time.monotonic() - t_db_start
+        )
 
-        with ThreadPoolExecutor(max_workers=database.metrics_config.max_threads) as executor:
-            for rq, results in executor.map(run_and_wait, all_metric_queries, timeout=db_timeout ):
+        with ThreadPoolExecutor(
+            max_workers=database.metrics_config.max_threads
+        ) as executor:
+            for rq, results in executor.map(
+                run_and_wait, all_metric_queries, timeout=db_timeout
+            ):
                 if rq.status == QueryStatus.DONE:
                     num_successful += 1
-                else: 
+                else:
                     num_failed += 1
 
                 update()
@@ -398,11 +406,14 @@ class SnowflakeConn:
             List of Metric objects containing all collected metrics
         """
 
+
         t_run_timeout = t_run_start + self.per_run_timeout_seconds
 
         for db_name, database in self.databases.items():
-            #yield from self._snapshot_database(db_name, database, t_run_timeout)
-            yield from self._snapshot_database_threaded(db_name, database, t_run_timeout)
+            # yield from self._snapshot_database(db_name, database, t_run_timeout)
+            yield from self._snapshot_database_threaded(
+                db_name, database, t_run_timeout
+            )
             if time.monotonic() > t_run_timeout:
                 print(f"Timed out in {self.per_run_timeout_seconds} seconds")
                 return
@@ -502,6 +513,7 @@ class SnowflakeConn:
                 query=simple_query,
                 query_id="",
                 status=QueryStatus.QUEUED,
+                timeout_at=0.0,
                 fq_table_name=fq_table_name,
                 column_name=column_name,
                 query_detail="simple_metrics",
@@ -561,6 +573,7 @@ class SnowflakeConn:
                         query=percentile_query,
                         query_id="",
                         status=QueryStatus.QUEUED,
+                        timeout_at=0.0,
                         fq_table_name=fq_table_name,
                         column_name=column_name,
                         query_detail="numeric_percentiles",
@@ -648,6 +661,7 @@ class SnowflakeConn:
                         query=histogram_query,
                         query_id="",
                         status=QueryStatus.QUEUED,
+                        timeout_at=0.0,
                         fq_table_name=fq_table_name,
                         column_name=column_name,
                         query_detail="numeric_histogram",
@@ -766,6 +780,7 @@ class SnowflakeConn:
                         query=histogram_query,
                         query_id="",
                         status=QueryStatus.QUEUED,
+                        timeout_at=0.0,
                         fq_table_name=fq_table_name,
                         column_name=column_name,
                         query_detail="datetime_histogram",
@@ -837,6 +852,7 @@ class SnowflakeConn:
                 - List of Metric objects with table-level metrics
                 - List of table names found in the schema
         """
+
         metrics = []
         table_names = []
         fq_table_names = []
