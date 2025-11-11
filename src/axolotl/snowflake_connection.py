@@ -15,6 +15,7 @@ from typing import (
     Any,
     Set,
     Callable,
+    Optional,
 )
 
 import snowflake.connector
@@ -211,18 +212,32 @@ class SnowflakeConn:
             exclude={"metrics", "type", "include_schemas", "exclude_schemas"},
         )
 
-        # Handle private_key_file -> read and convert to private_key
-        if "private_key_file" in conn_params:
+        self.conn = SnowflakeConn.get_conn(console=self.console, **conn_params)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.conn:
+            self.conn.close()
+        # Return None to propagate any exceptions
+        return None
+
+    @staticmethod
+    def get_conn(
+        console = Console(),
+        private_key_file: Optional[str] = None,
+        private_key_file_pwd: Optional[str] = None,
+        **conn_params
+    ):
+        if private_key_file:
             from cryptography.hazmat.backends import default_backend
             from cryptography.hazmat.primitives import serialization
-
-            private_key_file = conn_params.pop("private_key_file")
-            private_key_pwd = conn_params.pop("private_key_file_pwd", None)
 
             with open(private_key_file, "rb") as key_file:
                 private_key_data = key_file.read()
 
-            password_bytes = private_key_pwd.encode() if private_key_pwd else None
+            password_bytes = private_key_file_pwd.encode() if private_key_file_pwd else None
 
             private_key = serialization.load_pem_private_key(
                 private_key_data, password=password_bytes, backend=default_backend()
@@ -233,25 +248,19 @@ class SnowflakeConn:
                 format=serialization.PrivateFormat.PKCS8,
                 encryption_algorithm=serialization.NoEncryption(),
             )
-            conn_params["private_key"] = pkb
+            conn_params = {
+                **conn_params,
+                "private_key": pkb,
+            }
 
         try:
-            self.conn = snowflake.connector.connect(**conn_params)
+            return snowflake.connector.connect(**conn_params)
 
         except Exception:
             # TODO Don't print sensitive connection params
-            self.console.print(f"Failed to create snowflake connection: {connection_name}")
-            self.console.print(traceback.format_exc())
+            console.print(f"Failed to create snowflake connection: {conn_params.get('connection_name')}")
+            console.print(traceback.format_exc())
             raise
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.conn:
-            self.conn.close()
-        # Return None to propagate any exceptions
-        return None
 
     def run_metric_query(self, metric_query: MetricQuery) -> MetricQuery:
         """
@@ -377,8 +386,7 @@ class SnowflakeConn:
                         # Update status to ERROR
                         del running_queries[qid]
                         num_failed += 1
-                    finally:
-                        break  # stop finishing and skip to enqueueing
+                    break  # stop finishing and skip to enqueueing
 
                 elif rq.timeout_at < time.monotonic():
                     # if we're done with this query, yoink it
