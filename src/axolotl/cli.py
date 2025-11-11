@@ -4,6 +4,7 @@ from typing import List
 from typing_extensions import Annotated
 from rich.markup import escape
 from rich.console import Console
+import time
 
 import typer
 from tabulate import tabulate
@@ -16,7 +17,7 @@ from .alert_report import AlertReport
 from .config import load_config
 from .live_run_console import live_run_console
 from .generate_config_interactive import generate_config_interactive
-
+import traceback
 
 app = typer.Typer()
 
@@ -48,6 +49,7 @@ def run(
     state = StateDAO(state_conn)
 
     config = load_config(config_path)
+    t_run_start = time.monotonic()
 
     with live_run_console() as console:
         with state.make_run() as run_id:
@@ -55,11 +57,12 @@ def run(
 
             for name in config.connections.keys():
                 with SnowflakeConn(config, name, run_id, console) as snowflake_conn:
-                    for m in snowflake_conn.snapshot():
+                    for m in snowflake_conn.snapshot(t_run_start):
                         try:
                             state.record_metric(m)
                         except Exception as e:
                             print(f"Error recording metric: {e}")
+                            print(traceback.format_exc())
                             raise
 
 

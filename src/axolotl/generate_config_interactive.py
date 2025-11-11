@@ -97,11 +97,12 @@ def generate_config_interactive(config_path: Path) -> bool:
             ]
 
         config_yaml = re.sub(r'\n+', '\n', textwrap.dedent(f"""\
-            metrics:
+            per_run_timeout_seconds: 1800
+            metrics_config:
               max_threads: 10
               per_query_timeout_seconds: 60
               per_column_timeout_seconds: 90
-              per_run_timeout_seconds: 1800
+              per_database_timeout_seconds: 600
               exclude_expensive_queries: false
               exclude_complex_queries: false
             connections:
