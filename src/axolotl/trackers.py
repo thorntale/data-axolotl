@@ -363,7 +363,9 @@ class ColumnTypeSimpleTracker(EqualityMetricTracker):
     pretty_name = 'Simple Type'
     description = 'The type category of the column'
 
-    def value_formatter(self, value: SimpleDataType) -> str:
+    def value_formatter(self, value: SimpleDataType | None) -> str:
+        if value is None:
+            return 'null'
         return str(value.value)
 
     # Doesn't alert

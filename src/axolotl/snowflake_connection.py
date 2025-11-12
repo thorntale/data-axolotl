@@ -90,25 +90,6 @@ def extract_simple_metrics(
     return metrics
 
 
-class MetricQuery(NamedTuple):
-    # Query execution details
-    query: str  # SQL query string to execute
-    query_id: str  # Snowflake query ID (set after execution)
-    timeout_at: float  # monotonic time at which to timeout this query
-    status: QueryStatus  # Current status of the query
-
-    # debug info
-    fq_table_name: str
-    column_name: str
-    query_detail: str
-
-    # query results into Metric objects
-    # Takes run_id, fq_table_name, column_name, and dict of query results, returns list of Metrics
-    result_extractor: Callable[[int, str, str, Dict[str, Any]], List[Metric]] = (
-        extract_simple_metrics
-    )
-
-
 SNOWFLAKE_NUMERIC_TYPES = [
     "NUMBER",
     "DECIMAL",
@@ -310,6 +291,7 @@ class SnowflakeConn:
     ) -> Iterator[Metric]:
         all_column_infos: List[ColumnInfo] = []
 
+        assert database.metrics_config
         t_db_start = time.monotonic()
         t_db_timeout = t_db_start + database.metrics_config.per_database_timeout_seconds
         metrics: List[Metric] = []
@@ -412,7 +394,7 @@ class SnowflakeConn:
             # Check run-level timeout
             if t_run_timeout < time.monotonic():
                 self.console.print(
-                    f"Timed out in {self.default_metrics_config.per_run_timeout_seconds} seconds: returning early having completed {num_successful}/{num_queries} queries"
+                    f"Timed out in {self.per_run_timeout_seconds} seconds: returning early having completed {num_successful}/{num_queries} queries"
                 )
                 num_failed += len(running_queries)
                 running_queries = {}
@@ -438,6 +420,7 @@ class SnowflakeConn:
                     self.console.print(
                         f"Failed to start: {queued_query.fq_table_name}.{queued_query.column_name} [{queued_query.query_detail}]"
                     )
+                update()
                 i += 1
 
     def snapshot(self, t_run_start: float) -> Iterator[Metric]:
@@ -473,6 +456,7 @@ class SnowflakeConn:
         data_type_simple = column_info.data_type_simple
         col_sql = f'c."{column_info.column_name}"'
         queries = {
+            "data_type": f"'{column_info.data_type}'",
             "row_count": "COUNT(*)",
             "null_count": f"COUNT_IF({col_sql} IS NULL)",
             "null_pct": f'100.0 * "null_count" / "row_count"',
