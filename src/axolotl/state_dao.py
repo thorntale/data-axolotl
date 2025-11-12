@@ -7,6 +7,7 @@ from datetime import datetime, date
 from datetime import timezone
 from contextlib import contextmanager
 import simplejson as json  # for Decimal support
+import traceback
 
 
 class Run(NamedTuple):
@@ -93,6 +94,7 @@ class StateDAO:
             self._end_run(run_id, True)
         except Exception as e:
             self._end_run(run_id, False)
+            self.console.print(traceback.format_exc())
             console = Console()
             console.print('Run failed!!!')
             console.print(e)
