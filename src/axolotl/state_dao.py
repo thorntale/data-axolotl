@@ -94,8 +94,8 @@ class StateDAO:
             self._end_run(run_id, True)
         except Exception as e:
             self._end_run(run_id, False)
-            self.console.print(traceback.format_exc())
             console = Console()
+            console.print(traceback.format_exc())
             console.print('Run failed!!!')
             console.print(e)
 

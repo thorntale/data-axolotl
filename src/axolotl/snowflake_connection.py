@@ -333,6 +333,7 @@ class SnowflakeConn:
                 )
 
         def run_and_wait(metric_query: MetricQuery) -> Tuple[MetricQuery, List[Metric]]:
+            assert database.metrics_config
             rq = self.run_metric_query(
                 metric_query, database.metrics_config.per_query_timeout_seconds
             )
@@ -382,6 +383,7 @@ class SnowflakeConn:
 
         # subtract the time we took to query the table stats and do setup, and
         # that's what we'll give the executor to run the column queries.
+        assert database.metrics_config
         db_timeout = database.metrics_config.per_database_timeout_seconds - (
             time.monotonic() - t_db_start
         )
