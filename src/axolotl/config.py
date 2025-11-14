@@ -213,7 +213,7 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     )
 
 
-def load_config(config_path: str | Path = "conf/config.yaml") -> AxolotlConfig:
+def load_config(config_path: str | Path = "config.yaml") -> AxolotlConfig:
     """
     Load configuration from a file with a convenient default path.
 
