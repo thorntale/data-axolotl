@@ -35,11 +35,11 @@
 #          exclude_complex_queries: false
 #          per_database_timeout_seconds: 600
 
-per_run_timeout_seconds: 10
+per_run_timeout_seconds: 1200
 metrics_config:
   max_threads: 10
-  per_query_timeout_seconds: 10
-  per_column_timeout_seconds: 10
+  per_query_timeout_seconds: 60
+  per_database_timeout_seconds: 1200
   exclude_expensive_queries: false
   exclude_complex_queries: false
 connections:
