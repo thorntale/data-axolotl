@@ -1,5 +1,6 @@
 import time
 import json
+import re
 import traceback
 
 from collections.abc import Iterator
@@ -22,8 +23,8 @@ import snowflake.connector
 from snowflake.connector import DictCursor
 from rich.console import Console
 
-from .config import AxolotlConfig, Database
-from .state_dao import Metric
+from .config import AxolotlConfig, SnowflakeConnectionConfig
+from .state_dao import Metric, FqTable
 from .live_run_console import LiveConsole
 from .metric_query import QueryStatus, MetricQuery
 
@@ -49,15 +50,14 @@ class SimpleDataType(Enum):
 
 
 class ColumnInfo(NamedTuple):
-    fq_table_name: str
+    table: FqTable
     column_name: str
     data_type: str
     data_type_simple: SimpleDataType
-    database: Database
 
 
 def extract_simple_metrics(
-    run_id: int, fq_table_name: str, column_name: str, results: Dict[str, Any]
+    run_id: int, fq_table_name: FqTable, column_name: str, results: Dict[str, Any]
 ) -> List[Metric]:
     """
     Default extractor function that converts query results into Metric objects.
@@ -135,7 +135,6 @@ SNOWFLAKE_STRUCTURED_TYPES = [
     "MAP",
 ]
 
-
 SNOWFLAKE_UNSTRUCTURED_TYPES = [
     "FILE",
 ]
@@ -143,7 +142,6 @@ SNOWFLAKE_UNSTRUCTURED_TYPES = [
 SNOWFLAKE_VECTOR_TYPES = [
     "VECTOR",
 ]
-
 
 def get_simple_data_type(data_type: str) -> SimpleDataType:
     data_type = data_type.upper()
@@ -174,7 +172,7 @@ class SnowflakeConn:
     def __init__(
         self,
         config: AxolotlConfig,
-        connection_name: str,
+        connection_config: SnowflakeConnectionConfig,
         run_id: int,
         console: Console | LiveConsole = Console(),
     ):
@@ -188,30 +186,21 @@ class SnowflakeConn:
         """
         self.console = console
 
-        if connection_name not in config.connections:
-            raise ValueError(
-                f"Connection '{connection_name}' not found in config. "
-                f"Available connections: {list(config.connections.keys())}"
-            )
-
         # Store connection options and metrics config
-        self.connection_options = config.connections[connection_name]
-        self.metrics_config = config.metrics_config
-        self.per_run_timeout_seconds = config.per_run_timeout_seconds
+        self.connection_config = connection_config
 
-        self.databases = self.connection_options.databases
+        self.max_threads = connection_config.max_threads or config.max_threads
+        self.run_timeout_seconds = config.run_timeout_seconds
+        self.connection_timeout_seconds = connection_config.connection_timeout_seconds or config.connection_timeout_seconds
+        self.query_timeout_seconds = connection_config.query_timeout_seconds or config.query_timeout_seconds
+        self.exclude_expensive_queries = connection_config.exclude_expensive_queries if connection_config.exclude_expensive_queries is not None else config.exclude_expensive_queries
+        self.exclude_complex_queries = connection_config.exclude_complex_queries if connection_config.exclude_complex_queries is not None else config.exclude_complex_queries
+
+        # self.databases = self.connection_options.databases
         self.run_id = run_id
 
-        # Prepare connection parameters for Snowflake connector
-        # Convert Pydantic model to dict and filter out custom fields
-        conn_params = self.connection_options.model_dump(
-            exclude_none=True,
-            exclude={"metrics", "type", "include_schemas", "exclude_schemas"},
-        )
-
-        self.conn = SnowflakeConn.get_conn(console=self.console, **conn_params)
-
     def __enter__(self):
+        self.conn = SnowflakeConn.get_conn(self.console, self.connection_config.params)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -222,35 +211,11 @@ class SnowflakeConn:
 
     @staticmethod
     def get_conn(
-        console = Console(),
-        private_key_file: Optional[str] = None,
-        private_key_file_pwd: Optional[str] = None,
-        **conn_params
+        console,
+        conn_params,
     ):
-        if private_key_file:
-            from cryptography.hazmat.backends import default_backend
-            from cryptography.hazmat.primitives import serialization
-
-            with open(private_key_file, "rb") as key_file:
-                private_key_data = key_file.read()
-
-            password_bytes = private_key_file_pwd.encode() if private_key_file_pwd else None
-
-            private_key = serialization.load_pem_private_key(
-                private_key_data, password=password_bytes, backend=default_backend()
-            )
-
-            pkb = private_key.private_bytes(
-                encoding=serialization.Encoding.DER,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption(),
-            )
-            conn_params = {
-                **conn_params,
-                "private_key": pkb,
-            }
         try:
-            return snowflake.connector.connect(**conn_params)
+            return snowflake.connector.connect(conn_params)
 
         except Exception:
             # TODO: Don't print sensitive connection params
@@ -288,20 +253,23 @@ class SnowflakeConn:
             # Return updated MetricQuery with ERROR status
             return metric_query._replace(status=QueryStatus.ERROR)
 
-    def _snapshot_database_threaded(
-        self, db_name: str, database: Database, t_run_timeout: float
+    def _snapshot_threaded(
+        self,
+        t_run_timeout: float,
     ) -> Iterator[Metric]:
-        all_column_infos: List[ColumnInfo] = []
         t_db_start = time.monotonic()
 
-        (table_metrics, table_names) = self.scan_table_level_metrics(database)
+        databases = self.list_included_databases()
+
+        table_metrics, table_names = self.scan_tables(databases)
         t_tablescan = time.monotonic()  ## Time it took to scan the table metrics
         self.console.print(
-            f"Found {len(table_names)} tables in {round(t_tablescan-t_db_start, 2)} seconds in {db_name} ({database.database}). Enumerating columns..."
+            f"Found {len(table_names)} tables in {round(t_tablescan-t_db_start, 2)} seconds. Enumerating columns..."
         )
         yield from table_metrics
 
-        all_column_infos.extend(self.list_columns(database))
+        all_column_infos = self.list_columns(databases)
+
         print(f"Generating queries for {len(all_column_infos)} columns...")
         all_metric_queries: List[MetricQuery] = []
         for c_info in all_column_infos:
@@ -317,7 +285,7 @@ class SnowflakeConn:
         all_metric_queries.sort(key=query_priority)
 
         self.console.print(
-            f"Snapshotting {len(all_metric_queries)} queries across {len(self.databases)} databases..."
+            f"Snapshotting using {len(all_metric_queries)} queries..."
         )
         num_queries = len(all_metric_queries)
         num_successful = 0  # Count of successful queries
@@ -333,9 +301,8 @@ class SnowflakeConn:
                 )
 
         def run_and_wait(metric_query: MetricQuery) -> Tuple[MetricQuery, List[Metric]]:
-            assert database.metrics_config
             rq = self.run_metric_query(
-                metric_query, database.metrics_config.per_query_timeout_seconds
+                metric_query, self.query_timeout_seconds
             )
             qid = rq.query_id
             assert qid
@@ -383,16 +350,15 @@ class SnowflakeConn:
 
         # subtract the time we took to query the table stats and do setup, and
         # that's what we'll give the executor to run the column queries.
-        assert database.metrics_config
-        db_timeout = database.metrics_config.per_database_timeout_seconds - (
+        connection_timeout = self.connection_timeout_seconds - (
             time.monotonic() - t_db_start
         )
 
         with ThreadPoolExecutor(
-            max_workers=database.metrics_config.max_threads
+            max_workers=self.max_threads
         ) as executor:
             for rq, results in executor.map(
-                run_and_wait, all_metric_queries, timeout=db_timeout
+                run_and_wait, all_metric_queries, timeout=connection_timeout
             ):
                 if rq.status == QueryStatus.DONE:
                     num_successful += 1
@@ -414,25 +380,15 @@ class SnowflakeConn:
         Returns:
             List of Metric objects containing all collected metrics
         """
-
-
-        t_run_timeout = t_run_start + self.per_run_timeout_seconds
-
-        for db_name, database in self.databases.items():
-            # yield from self._snapshot_database(db_name, database, t_run_timeout)
-            yield from self._snapshot_database_threaded(
-                db_name, database, t_run_timeout
-            )
-            if time.monotonic() > t_run_timeout:
-                print(f"Timed out in {self.per_run_timeout_seconds} seconds")
-                return
+        t_run_timeout = t_run_start + self.run_timeout_seconds
+        yield from self._snapshot_threaded(t_run_timeout)
 
         print(f"Finished in {round(time.monotonic()-t_run_start, 2)} seconds")
 
     def _simple_queries(
         self,
         column_info: ColumnInfo,
-    ) -> dict[str, str]:
+    ) -> Dict[str, str]:
         """
         The expensive queries are distinct_count (and therefore distinct_rate), and string_avg_length
         """
@@ -446,8 +402,7 @@ class SnowflakeConn:
             "null_pct": f'100.0 * "null_count" / "row_count"',
         }
 
-        assert column_info.database.metrics_config
-        if not column_info.database.metrics_config.exclude_expensive_queries:
+        if not self.exclude_expensive_queries:
             queries.update(
                 {
                     "distinct_count": f"COUNT(DISTINCT({col_sql}))",
@@ -467,8 +422,7 @@ class SnowflakeConn:
             )
 
         elif data_type_simple == SimpleDataType.STRING:
-            assert column_info.database.metrics_config
-            if not column_info.database.metrics_config.exclude_expensive_queries:
+            if not self.exclude_expensive_queries:
                 queries.update(
                     {
                         "string_avg_length": f"AVG(LEN({col_sql}))",
@@ -503,7 +457,6 @@ class SnowflakeConn:
         Returns:
             List of MetricQuery objects in QUEUED state
         """
-        (fq_table_name, column_name, _, data_type_simple, database) = column_info
         queries: List[MetricQuery] = []
 
         # 1. Generate simple metrics query (always included)
@@ -515,7 +468,7 @@ class SnowflakeConn:
                     for metric_name, metric_query
                     in query_columns.items()
                 )}
-            FROM {fq_table_name} as c
+            FROM {column_info.table} as c
         """
 
         queries.append(
@@ -524,23 +477,22 @@ class SnowflakeConn:
                 query_id="",
                 status=QueryStatus.QUEUED,
                 timeout_at=0.0,
-                fq_table_name=fq_table_name,
-                column_name=column_name,
+                fq_table_name=column_info.table,
+                column_name=column_info.column_name,
                 query_detail="simple_metrics",
                 result_extractor=extract_simple_metrics,
             )
         )
 
         # 2. Generate complex queries based on data type (if not excluded)
-        assert database.metrics_config
-        if not database.metrics_config.exclude_complex_queries:
-            if data_type_simple == SimpleDataType.NUMERIC:
+        if not self.exclude_complex_queries:
+            if column_info.data_type_simple == SimpleDataType.NUMERIC:
                 # Percentiles query
                 percentile_query = f"""
                     WITH percentile_state AS (
                         SELECT
-                            APPROX_PERCENTILE_ACCUMULATE("{column_name}") AS col_state
-                        FROM {fq_table_name}
+                            APPROX_PERCENTILE_ACCUMULATE("{column_info.column_name}") AS col_state
+                        FROM {column_info.table}
                     )
                     SELECT CURRENT_TIMESTAMP() as "_measured_at",
                     OBJECT_CONSTRUCT(
@@ -565,7 +517,7 @@ class SnowflakeConn:
 
                 # Custom extractor for percentiles
                 def extract_percentiles(
-                    run_id: int, fq_table: str, col: str, results: Dict[str, Any]
+                    run_id: int, fq_table: FqTable, col: str, results: Dict[str, Any]
                 ) -> List[Metric]:
                     return [
                         Metric(
@@ -584,8 +536,8 @@ class SnowflakeConn:
                         query_id="",
                         status=QueryStatus.QUEUED,
                         timeout_at=0.0,
-                        fq_table_name=fq_table_name,
-                        column_name=column_name,
+                        fq_table_name=column_info.table,
+                        column_name=column_info.column_name,
                         query_detail="numeric_percentiles",
                         result_extractor=extract_percentiles,
                     )
@@ -596,21 +548,21 @@ class SnowflakeConn:
                 histogram_query = f"""
                     WITH minmax AS (
                         SELECT
-                            MIN(t."{column_name}") AS COL_MIN,
-                            MAX(t."{column_name}") AS COL_MAX,
+                            MIN(t."{column_info.column_name}") AS COL_MIN,
+                            MAX(t."{column_info.column_name}") AS COL_MAX,
                             COUNT(*) AS ROW_COUNT,
-                            COUNT_IF(t."{column_name}" IS NULL) AS NULL_COUNT
-                        FROM {fq_table_name} as t
+                            COUNT_IF(t."{column_info.column_name}" IS NULL) AS NULL_COUNT
+                        FROM {column_info.table} as t
                     ),
                     histogram_buckets AS (
                         SELECT
-                            LEAST(GREATEST(WIDTH_BUCKET(t."{column_name}",
+                            LEAST(GREATEST(WIDTH_BUCKET(t."{column_info.column_name}",
                                 (SELECT COL_MIN FROM minmax),
                                 (SELECT COL_MAX FROM minmax),
                                 {num_buckets}
                             ), 1), {num_buckets}) as BUCKET_I,
                             COUNT(*) as COUNT
-                        FROM {fq_table_name} AS t
+                        FROM {column_info.table} AS t
                         CROSS JOIN minmax
                         WHERE minmax.COL_MIN != minmax.COL_MAX
                         GROUP BY BUCKET_I
@@ -649,7 +601,7 @@ class SnowflakeConn:
 
                 # Custom extractor for histogram
                 def extract_histogram(
-                    run_id: int, fq_table: str, col: str, results: Dict[str, Any]
+                    run_id: int, fq_table: FqTable, col: str, results: Dict[str, Any]
                 ) -> List[Metric]:
                     return [
                         Metric(
@@ -672,21 +624,21 @@ class SnowflakeConn:
                         query_id="",
                         status=QueryStatus.QUEUED,
                         timeout_at=0.0,
-                        fq_table_name=fq_table_name,
-                        column_name=column_name,
+                        fq_table_name=column_info.table,
+                        column_name=column_info.column_name,
                         query_detail="numeric_histogram",
                         result_extractor=extract_histogram,
                     )
                 )
 
-            elif data_type_simple == SimpleDataType.DATETIME:
+            elif column_info.data_type_simple == SimpleDataType.DATETIME:
                 # Datetime histogram query
                 histogram_query = f"""
                     with bucket_config as (
                         select
-                            min(t."{column_name}")
+                            min(t."{column_info.column_name}")
                                 as col_min,
-                            max(t."{column_name}")
+                            max(t."{column_info.column_name}")
                                 as col_max,
                             datediff(hour, col_min, col_max)
                                 as date_diff_hours,
@@ -704,26 +656,26 @@ class SnowflakeConn:
                             end
                                 as bucket_unit,
                             greatest(1.0, ceil(date_diff_years / 30.0)) as years_per_bin
-                        from {fq_table_name} as t
+                        from {column_info.table} as t
                     ),
                     histogram_buckets AS (
                         SELECT
                             CASE bc.BUCKET_UNIT
                                 WHEN 'hour' THEN
-                                    DATE_TRUNC('hour', t."{column_name}")
+                                    DATE_TRUNC('hour', t."{column_info.column_name}")
                                 WHEN 'day' THEN
-                                    DATE_TRUNC('day', t."{column_name}")
+                                    DATE_TRUNC('day', t."{column_info.column_name}")
                                 WHEN 'month' THEN
-                                    DATE_TRUNC('month', t."{column_name}")
+                                    DATE_TRUNC('month', t."{column_info.column_name}")
                                 WHEN 'year' THEN
                                     DATEADD('year',
-                                        bc.years_per_bin * floor((year(t."{column_name}") - year(bc.col_min)) / bc.years_per_bin),
+                                        bc.years_per_bin * floor((year(t."{column_info.column_name}") - year(bc.col_min)) / bc.years_per_bin),
                                         DATE_TRUNC('year', bc.col_min)
                                     )
                             END AS bucket_timestamp,
                             bc.BUCKET_UNIT,
                             COUNT(*) as count
-                        FROM {fq_table_name} as t
+                        FROM {column_info.table} as t
                         CROSS JOIN bucket_config as bc
                         GROUP BY bucket_timestamp, bc.BUCKET_UNIT
                     ),
@@ -772,7 +724,7 @@ class SnowflakeConn:
 
                 # Custom extractor for datetime histogram
                 def extract_datetime_histogram(
-                    run_id: int, fq_table: str, col: str, results: Dict[str, Any]
+                    run_id: int, fq_table: FqTable, col: str, results: Dict[str, Any]
                 ) -> List[Metric]:
                     return [
                         Metric(
@@ -791,8 +743,8 @@ class SnowflakeConn:
                         query_id="",
                         status=QueryStatus.QUEUED,
                         timeout_at=0.0,
-                        fq_table_name=fq_table_name,
-                        column_name=column_name,
+                        fq_table_name=column_info.table,
+                        column_name=column_info.column_name,
                         query_detail="datetime_histogram",
                         result_extractor=extract_datetime_histogram,
                     )
@@ -800,54 +752,86 @@ class SnowflakeConn:
 
         return queries
 
-    def list_columns(self, database: Database) -> List[ColumnInfo]:
+    def list_columns(self, databases: List[str]) -> List[ColumnInfo]:
         """
-        List all columns in a database, respecting included and excluded schemas
+        List all columns, respecting included and excluded schemas
 
         Args:
         Returns:
-            ColumnInfo: all the information to scan the column
+            ColumnInfo[]: all the information to scan the column
         """
         column_info_arr: List[ColumnInfo] = []
 
-        if len(database.include_schemas or []) > 0:
-            table_schema_clause = (
-                f"WHERE TABLE_SCHEMA IN {to_string_array(database.include_schemas)}"
-            )
-        elif len(database.exclude_schemas or []) > 0:
-            table_schema_clause = (
-                f"WHERE TABLE_SCHEMA NOT IN {to_string_array(database.exclude_schemas)}"
-            )
-        else:
-            table_schema_clause = ""
-
-        # fq_table_name = f"{self.database}.{self.table_schema}.{table_name}"
         with self.conn.cursor() as cur:
-            query = f"""
-                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, TABLE_SCHEMA, TABLE_NAME
-                    FROM INFORMATION_SCHEMA.COLUMNS
-                    {table_schema_clause}
+            cur.execute(' union all '.join(
+                f"""
+                    select
+                        table_catalog,
+                        column_name,
+                        data_type,
+                        is_nullable,
+                        table_schema,
+                        table_name
+                    from "{database}".information_schema.columns
                 """
-            cur.execute(f"USE DATABASE {database.database};")
-            cur.execute(query)
+                for database in databases
+            ))
 
-            for column_name, data_type, is_nullable, table_schema, table_name in cur:
-                fq_table_name = f"{database.database}.{table_schema}.{table_name}"
-                column_info_arr.append(
-                    ColumnInfo(
-                        fq_table_name=fq_table_name,
-                        column_name=column_name,
-                        data_type=data_type,
-                        data_type_simple=get_simple_data_type(data_type),
-                        database=database,
+            for table_catalog, column_name, data_type, is_nullable, table_schema, table_name in cur:
+                fq_table = FqTable(table_catalog, table_schema, table_name)
+                if self.include_column(fq_table, column_name):
+                    column_info_arr.append(
+                        ColumnInfo(
+                            table=fq_table,
+                            column_name=column_name,
+                            data_type=data_type,
+                            data_type_simple=get_simple_data_type(data_type),
+                        )
                     )
-                )
 
         return column_info_arr
 
-    def scan_table_level_metrics(
-        self, database: Database
-    ) -> Tuple[List[Metric], List[str]]:
+    def list_included_databases(self) -> List[str]:
+        with self.conn.cursor(DictCursor) as cur:
+            cur.execute('show databases')
+            all_databases = [row['name'] for row in cur.fetchall()]
+
+        return [
+            database
+            for database in all_databases
+            if self.database_is_included_at_all(database)
+        ]
+
+    def database_is_included_at_all(self, database: str) -> bool:
+        """ Return True if this database is included in _any_ metrics. """
+        if self.connection_config.include is not None:
+            for inc in self.connection_config.include:
+                if inc.split('.')[0].lower() == database.lower():
+                    break
+            else:
+                return False
+        for exc in self.connection_config.exclude:
+            parts = re.split(r'\.|:', exc)
+            if len(parts) == 1 and parts[0].lower() == database.lower():
+                return False
+        return True
+
+    def include_table_at_all(self, table: FqTable) -> bool:
+        """ Whether this table or any of its columns are included """
+        # TODO
+        1/0
+
+    def include_table_metrics(self, table: FqTable) -> bool:
+        """ Whether this table itself is included """
+        # TODO
+        1/0
+
+    def include_column(self, table: FqTable, column: str) -> bool:
+        """ Whether this column is included in metrics """
+        # TODO
+        1/0
+
+    def scan_tables(self, databases: List[str]) -> Tuple[List[Metric], List[FqTable]]:
         """
         Collect table-level metrics for all tables in the configured database/schema.
 
@@ -864,92 +848,79 @@ class SnowflakeConn:
         """
 
         metrics = []
-        table_names = []
-        fq_table_names = []
+        fq_table_names: List[FqTable] = []
 
-        if len(database.include_schemas or []) > 0:
-            table_schema_clause = (
-                f"WHERE TABLE_SCHEMA IN {to_string_array(database.include_schemas)}"
-            )
-        elif len(database.exclude_schemas or []) > 0:
-            table_schema_clause = (
-                f"WHERE TABLE_SCHEMA NOT IN {to_string_array(database.exclude_schemas)}"
-            )
-        else:
-            table_schema_clause = ""
+        for database in databases:
+            with self.conn.cursor(DictCursor) as cur:
+                try:
+                    cur.execute(f"""
+                        SELECT
+                            TABLE_CATALOG,
+                            TABLE_SCHEMA,
+                            TABLE_NAME,
+                            ROW_COUNT,
+                            BYTES,
+                            CREATED,
+                            LAST_ALTERED,
+                            CURRENT_TIMESTAMP() as measured_at
+                        FROM "{database}".INFORMATION_SCHEMA.TABLES
+                    """)
 
-        q = f"""
-                    SELECT
-                        TABLE_CATALOG,
-                        TABLE_SCHEMA,
-                        TABLE_NAME,
-                        ROW_COUNT,
-                        BYTES,
-                        CREATED,
-                        LAST_ALTERED,
-                        CURRENT_TIMESTAMP() as measured_at
-                    FROM INFORMATION_SCHEMA.TABLES
-                    {table_schema_clause};
-                """
-        with self.conn.cursor() as cur:
-            try:
-                cur.execute(f"USE DATABASE {database.database};")
-                cur.execute(q)
+                except Exception:
+                    self.console.print("Error running table scan query")
+                    self.console.print(traceback.format_exc())
+                    raise
 
-            except Exception:
-                self.console.print("Error running table scan query")
-                self.console.print(traceback.format_exc())
-                raise
+                for row in cur:
+                    fq_table_name = FqTable(
+                        row['TABLE_CATALOG'],
+                        row['TABLE_SCHEMA'],
+                        row['TABLE_NAME'],
+                    )
+                    measured_at = row['MEASURED_AT']
 
-            for (
-                table_catalog,
-                table_schema,
-                table_name,
-                row_count,
-                table_bytes,
-                created,
-                last_altered,
-                measured_at,
-            ) in cur:
-                g_measured_at = measured_at
-                table_names.append(table_name)
-                fq_table_name = f"{table_catalog}.{table_schema}.{table_name}"
-                fq_table_names.append(fq_table_name)
+                    if self.include_table_at_all(fq_table_name):
+                        fq_table_names.append(fq_table_name)
+                    else:
+                        continue
 
-                metrics += [
-                    Metric(
-                        run_id=self.run_id,
-                        target_table=fq_table_name,
-                        target_column=None,
-                        metric_name="row_count",
-                        metric_value=row_count,
-                        measured_at=measured_at,
-                    ),
-                    Metric(
-                        run_id=self.run_id,
-                        target_table=fq_table_name,
-                        target_column=None,
-                        metric_name="bytes",
-                        metric_value=table_bytes,
-                        measured_at=measured_at,
-                    ),
-                    Metric(
-                        run_id=self.run_id,
-                        target_table=fq_table_name,
-                        target_column=None,
-                        metric_name="created_at",
-                        metric_value=created,
-                        measured_at=measured_at,
-                    ),
-                    Metric(
-                        run_id=self.run_id,
-                        target_table=fq_table_name,
-                        target_column=None,
-                        metric_name="altered_at",
-                        metric_value=last_altered,
-                        measured_at=measured_at,
-                    ),
-                ]
+                    if not self.include_table_metrics(fq_table_name):
+                        continue
+
+                    metrics += [
+                        Metric(
+                            run_id=self.run_id,
+                            target_table=fq_table_name,
+                            target_column=None,
+                            metric_name="row_count",
+                            metric_value=row['ROW_COUNT'],
+                            measured_at=measured_at,
+                        ),
+                        Metric(
+                            run_id=self.run_id,
+                            target_table=fq_table_name,
+                            target_column=None,
+                            metric_name="bytes",
+                            metric_value=row['TABLE_BYTES'],
+                            measured_at=measured_at,
+                        ),
+                        Metric(
+                            run_id=self.run_id,
+                            target_table=fq_table_name,
+                            target_column=None,
+                            metric_name="created_at",
+                            metric_value=row['CREATED'],
+                            measured_at=measured_at,
+                        ),
+                        Metric(
+                            run_id=self.run_id,
+                            target_table=fq_table_name,
+                            target_column=None,
+                            metric_name="altered_at",
+                            metric_value=row['LAST_ALTERED'],
+                            measured_at=measured_at,
+                        ),
+                    ]
 
         with self.conn.cursor() as cur:
             try:
@@ -958,6 +929,7 @@ class SnowflakeConn:
                     select {','.join(
                         f"TO_TIMESTAMP_TZ(SYSTEM$LAST_CHANGE_COMMIT_TIME('{table_name}') / 1e9)"
                         for table_name in fq_table_names
+                        if self.include_table_metrics(fq_table_name)
                     )}
                 """
                 )
@@ -980,4 +952,4 @@ class SnowflakeConn:
                 for col, table_name in zip(results, fq_table_names)
             ]
 
-        return metrics, table_names
+        return metrics, fq_table_names

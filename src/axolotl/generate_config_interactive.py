@@ -37,7 +37,7 @@ def generate_config_interactive(config_path: Path) -> bool:
         })
         pw = None
         private_key_file = None
-        private_key_passphrase = None
+        private_key_file_pwd = None
 
         if method == 'pw':
             pw = Prompt.ask("[bold]Password[/bold]", password=True)
@@ -52,8 +52,8 @@ def generate_config_interactive(config_path: Path) -> bool:
                 # try validating with no password
                 if not validate_key(path):
                     while True:
-                        private_key_passphrase = Prompt.ask("[bold]Private Key Passphrase[/bold]", password=True)
-                        if not validate_key(path, password=private_key_passphrase):
+                        private_key_file_pwd = Prompt.ask("[bold]Private Key Passphrase[/bold]", password=True)
+                        if not validate_key(path, password=private_key_file_pwd):
                             console.print(f"[red]Failed to decrypt key.[/red]")
                             continue
                         break
@@ -62,13 +62,15 @@ def generate_config_interactive(config_path: Path) -> bool:
         # Test Connection
         with console.status('Testing Snowflake Connection...') as s:
             conn = SnowflakeConn.get_conn(
-                console=console,
-                private_key_file=str(private_key_file),
-                private_key_file_pwd=private_key_passphrase,
-                password=pw or None,
-                account=account,
-                user=user,
-                warehouse=warehouse or None,
+                console,
+                {
+                    'private_key_file': str(private_key_file),
+                    'private_key_file_pwd': private_key_file_pwd,
+                    'password': pw or None,
+                    'account': account,
+                    'user': user,
+                    'warehouse': warehouse or None,
+                },
             )
             assert conn
             try:
@@ -111,9 +113,8 @@ def generate_config_interactive(config_path: Path) -> bool:
                 account: {json.dumps(account)}
                 user: {json.dumps(user)}
                 {f'password: {json.dumps(pw)}' if pw else ''}
-                {'authenticator: SNOWFLAKE_JWT' if method == 'key' else ''}
                 {f'private_key_file: {json.dumps(private_key_file)}' if private_key_file else ''}
-                {f'private_key_file_pwd: {json.dumps(private_key_passphrase)}' if private_key_passphrase else ''}
+                {f'private_key_file_pwd: {json.dumps(private_key_file_pwd)}' if private_key_file_pwd else ''}
                 {f'warehouse: {json.dumps(warehouse)}' if warehouse else ''}
                 databases:
         """)).strip()

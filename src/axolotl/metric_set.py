@@ -8,7 +8,7 @@ from collections import defaultdict
 import humanize
 
 from .trackers import MetricTracker, MetricAlert, MetricKey, AlertSeverity, AlertMethod
-from .state_dao import Metric, Run
+from .state_dao import Metric, Run, FqTable
 from . import derived_metrics
 from . import trackers as ts
 from .snowflake_connection import SimpleDataType
@@ -24,7 +24,7 @@ class MetricSet:
         }
         self.metrics = metrics
         # do the group by once so we don't have to filter the whole list each time
-        self.grouped_metrics: Dict[Tuple[str, str | None, str], List[Metric]] = defaultdict(list)
+        self.grouped_metrics: Dict[Tuple[FqTable, str | None, str], List[Metric]] = defaultdict(list)
         for m in metrics:
             self.grouped_metrics[(m.target_table, m.target_column, m.metric_name)].append(m)
 
@@ -84,13 +84,13 @@ class MetricSet:
 
         return alerts
 
-    def get_tracked_tables(self) -> Set[str]:
+    def get_tracked_tables(self) -> Set[FqTable]:
         return {
             k.target_table
             for k in self.alertable_metric_keys
         }
 
-    def get_tracked_columns(self, table: Optional[str] = None) -> Set[Tuple[str, str]]:
+    def get_tracked_columns(self, table: Optional[FqTable] = None) -> Set[Tuple[FqTable, str]]:
         return {
             (k.target_table, k.target_column)
             for k in self.alertable_metric_keys
@@ -99,7 +99,7 @@ class MetricSet:
                 and (table is None or table == k.target_table)
         }
 
-    def get_metric_trackers_for_table(self, table: str) -> Generator[MetricTracker]:
+    def get_metric_trackers_for_table(self, table: FqTable) -> Generator[MetricTracker]:
         # We might list a table because there are column metrics within it, but
         # not track any table metrics. In that case, skip its metrics.
         if not any(
@@ -130,7 +130,7 @@ class MetricSet:
             ),
         )
 
-    def get_metric_trackers_for_column(self, table: str, column: str) -> Generator[MetricTracker]:
+    def get_metric_trackers_for_column(self, table: FqTable, column: str) -> Generator[MetricTracker]:
         col_data_types = self._get_metric_with_nulls(MetricKey(table, column, 'data_type'))
         col_data_type_simples = derived_metrics.data_type_simple(col_data_types)
 

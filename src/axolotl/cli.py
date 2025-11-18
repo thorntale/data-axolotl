@@ -15,7 +15,7 @@ from .state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
 from .alert_report import AlertReport
-from .config import load_config
+from .config import load_config, SnowflakeConnectionConfig
 from .live_run_console import live_run_console
 from .generate_config_interactive import generate_config_interactive
 import traceback
@@ -28,7 +28,7 @@ def version_callback(value: bool):
         raise typer.Exit()
 
 @app.callback()
-def main(
+def version_arg(
     version: Annotated[bool, typer.Option(
         '--version',
         help="Show the current version and exit.",
@@ -71,15 +71,18 @@ def run(
         with state.make_run() as run_id:
             console.print(f"Starting run #{run_id}...")
 
-            for name in config.connections.keys():
-                with SnowflakeConn(config, name, run_id, console) as snowflake_conn:
-                    for m in snowflake_conn.snapshot(t_run_start):
-                        try:
-                            state.record_metric(m)
-                        except Exception as e:
-                            print(f"Error recording metric: {e}")
-                            print(traceback.format_exc())
-                            raise
+            for conn_config in config.connections.values():
+                if isinstance(conn_config, SnowflakeConnectionConfig):
+                    with SnowflakeConn(config, conn_config, run_id, console) as snowflake_conn:
+                        for m in snowflake_conn.snapshot(t_run_start):
+                            try:
+                                state.record_metric(m)
+                            except Exception as e:
+                                print(f"Error recording metric: {e}")
+                                print(traceback.format_exc())
+                                raise
+                else:
+                    raise TypeError('Unknown connection config type')
 
 
 @app.command()
@@ -216,9 +219,7 @@ def history(
     HistoryReport(metric_set).print(save)
 
 def main():
-    """Entry point for the CLI application."""
     app()
-
 
 if __name__ == "__main__":
     main()

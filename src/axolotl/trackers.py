@@ -14,7 +14,7 @@ import humanize
 
 from .snowflake_connection import SimpleDataType
 from .display_utils import maybe_float
-from .state_dao import Metric
+from .state_dao import Metric, FqTable
 from .line_chart import arr_to_dots
 
 
@@ -25,7 +25,7 @@ MAX_DELTA_ESTIMATION_COUNT = 30
 
 
 class MetricKey(NamedTuple):
-    target_table: str
+    target_table: FqTable
     target_column: Optional[str]
     metric_name: str
 

@@ -1,7 +1,7 @@
 from typing import Callable, Dict, List, NamedTuple, Any
 from enum import Enum
 
-from .state_dao import Metric
+from .state_dao import Metric, FqTable
 
 
 class QueryStatus(Enum):
@@ -19,10 +19,10 @@ class MetricQuery(NamedTuple):
     status: QueryStatus  # Current status of the query
 
     # debug info
-    fq_table_name: str
+    fq_table_name: FqTable
     column_name: str
     query_detail: str
 
     # query results into Metric objects
     # Takes run_id, fq_table_name, column_name, and dict of query results, returns list of Metrics
-    result_extractor: Callable[[int, str, str, Dict[str, Any]], List[Metric]]
+    result_extractor: Callable[[int, FqTable, str, Dict[str, Any]], List[Metric]]

@@ -17,7 +17,6 @@ connections:
     user: fred_the_sasquatch_ro
     # $ENVVAR is the syntax to get from environment variable
     # password: $SASQUATCH_PASSWORD
-    authenticator: SNOWFLAKE_JWT
     private_key_file: conf/rsa_key_snowflake.p8
     private_key_file_pwd: $SNOWFLAKE_PRIVATE_KEY_PASSWORD
     warehouse: COMPUTE_WH

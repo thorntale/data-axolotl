@@ -9,86 +9,77 @@ import re
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional, List
+import inspect
 
+import snowflake.connector
 from pydantic import BaseModel, model_validator
 
 
-class MetricsConfig(BaseModel):
-    """Configuration for metrics collection."""
+class BaseConnectionConfig(BaseModel):
+    name: str
+    type: str
+    params: Dict[str, Any]
+    include: Optional[List[str]] = None
+    exclude: List[str] = []
 
-    max_threads: int = 10
-    per_query_timeout_seconds: int = 60
-    per_column_timeout_seconds: int = 60
-    per_database_timeout_seconds: int = 300
-    exclude_expensive_queries: bool = False
-    exclude_complex_queries: bool = False
+    max_threads: Optional[int] = None
+    run_timeout_seconds: Optional[int] = None
+    connection_timeout_seconds: Optional[int] = None
+    query_timeout_seconds: Optional[int] = None
+    exclude_expensive_queries: Optional[bool] = None
+    exclude_complex_queries: Optional[bool] = None
 
-class Database(BaseModel):
-    """Configuration for a single db."""
-    database: str
-
-    include_schemas: Optional[List[str]] = []
-    exclude_schemas: Optional[List[str]] = ["INFORMATION_SCHEMA"]
-    metrics_config: Optional[MetricsConfig] = None
-
-class SnowflakeConnection(BaseModel):
+class SnowflakeConnectionConfig(BaseConnectionConfig):
     """Configuration options for Snowflake connections."""
-
-    # Connection type
     type: str = "snowflake"
-
-    # Required fields
-    user: str
-    account: str
-    warehouse: Optional[str] = None
-
-    # Password authentication (mutually exclusive with private key auth)
-    password: Optional[str] = None
-
-    # Private key authentication (mutually exclusive with password)
-    private_key: Optional[bytes] = None
-    private_key_path: Optional[str] = None
-    private_key_passphrase: Optional[str] = None
-    private_key_file: Optional[str] = None
-    private_key_file_pwd: Optional[str] = None
-
-    databases: dict[str, Database]
-
-    # Optional additional fields that can be passed to snowflake.connector.connect()
-    role: Optional[str] = None
-    authenticator: Optional[str] = None
-    session_parameters: Optional[dict] = None
-    timezone: Optional[str] = None
-    autocommit: Optional[bool] = None
-    client_session_keep_alive: Optional[bool] = None
-    validate_default_parameters: Optional[bool] = None
-    paramstyle: Optional[str] = None
-    application: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_authentication(self):
-        """Validate that either password or private key authentication is configured."""
-        has_password = self.password is not None
-        has_private_key = (
-            self.private_key is not None
-            or self.private_key_file is not None
-            or self.private_key_path is not None
-        ) and self.authenticator == "SNOWFLAKE_JWT"
+        params = self.params
 
-        if not has_password and not has_private_key:
+        # error for invalid params
+        possible_params = {
+            param.name
+            for param
+            in inspect.signature(snowflake.connector.connect).parameters.values()
+        }
+        invalid_options = set(params.keys()) - possible_params
+        if invalid_options:
+            raise ValueError(f'Unrecognized connection params on snowflake connection {self.name}: [{", ".join(invalid_options)}]. Possible connection params are: {", ".join(possible_params)}')
+
+        # error for missing required params
+        required_options = {'account', 'user'}
+        missing_options = required_options - set(params.keys())
+        if missing_options:
+            raise ValueError(f'Missing required connection params on snowflake connection {self.name}: [{", ".join(missing_options)}] are required.')
+
+        # error for missing or multiple password methods
+        if (
+            'password' not in params
+            and 'private_key' not in params
+            and 'private_key_file' not in params
+        ):
+            raise ValueError(f'Missing password on snowflake connection {self.name}. Please provide either a password, private_key, or private_key_file connection param.')
+
+        if 'private_key' in params and 'private_key_file' in params:
             raise ValueError(
-                "Must have either password or private key authentication configured"
+                "Cannot provide both private_key and private_key_file."
             )
-
-        return self
-
+        if 'password' in params and ('private_key' in params or 'private_key_file' in params):
+            raise ValueError(
+                "Cannot provide both password and private key authentication."
+            )
 
 class AxolotlConfig(BaseModel):
     """Top-level configuration for Axolotl."""
+    max_threads: int = 10
+    run_timeout_seconds: int = 60
+    connection_timeout_seconds: int = 300
+    query_timeout_seconds: int = 60
+    exclude_expensive_queries: bool = False
+    exclude_complex_queries: bool = False
 
-    connections: dict[str, SnowflakeConnection]
-    per_run_timeout_seconds: int = 300
-    metrics_config: MetricsConfig
+    connections: dict[str, BaseConnectionConfig]
 
 
 def _substitute_env_vars(value: Any) -> Any:
@@ -122,36 +113,6 @@ def _substitute_env_vars(value: Any) -> Any:
         return value
 
 
-def _parse_snowflake_connections(
-    conn_config: dict[str, Any],
-    default_metrics_config: MetricsConfig,
-) -> SnowflakeConnection:
-    """
-    Parse a Snowflake connection configuration into a SnowflakeOptions object.
-
-    Args:
-        conn_config: Dictionary containing connection configuration
-        default_metrics_config: Default metrics configuration to use if not specified
-
-    Returns:
-        SnowflakeOptions
-
-    Raises:
-        ValueError: if a field is missing
-    """
-    # Parse the SnowflakeConnection first
-    connection = SnowflakeConnection(**conn_config)
-
-    # Override metrics in each database entry if it doesn't exist
-    for db_config in connection.databases.values():
-        if db_config.metrics_config is None:
-            db_config.metrics_config = default_metrics_config
-            # print("using default metricsconfig")
-    # for db_config in connection.databases.values():
-    #     print(db_config.metrics_config)
-    return connection
-
-
 def parse_config(config_path: str | Path) -> AxolotlConfig:
     """
     Parse a YAML configuration file to an AxolotlConfig.
@@ -179,38 +140,33 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     # Substitute environment variables throughout the config
     config = _substitute_env_vars(raw_config)
 
-    # Parse default metrics configuration first
-    metrics_section = config.get("metrics_config", {})
-    per_run_timeout_seconds = config.get("per_run_timeout_seconds", 600)
-
-    # Extract default metrics, but exclude dicts (those are connection-specific overrides)
-    default_metrics_dict = {
-        k: v for k, v in metrics_section.items() if not isinstance(v, dict)
-    }
-    default_metrics_config = MetricsConfig(**default_metrics_dict)
-
     # TODO: later, support conn types that aren't snowflake
-    connections: Dict[str, SnowflakeConnection] = {}
-    connections_section = config.get("connections", {})
+    connections: Dict[str, BaseConnectionConfig] = {}
 
-    for conn_name, conn_config in connections_section.items():
+    for conn_name, conn_config in config.pop("connections", {}):
         conn_type = conn_config.get("type", "snowflake")
         if conn_type == "snowflake":
             # Check if there's a connection-specific metrics override in metrics.<conn_name>
             ##connection_specific_metrics = metrics_section.get(conn_name)
-            connections[conn_name] = _parse_snowflake_connections(
-                #conn_name,
-                conn_config,
-                default_metrics_config,
-            )
+            opts = {
+                **conn_config,
+                'name': conn_name,
+                'type': 'snowflake',
+                'include': parse_include_list(conn_config.get(include)),
+                'exclude': parse_include_list(conn_config.get(exclude)),
+            }
+            connections[conn_name] = SnowflakeConnectionConfig(**opts)
         else:
             raise ValueError(f"Invalid connection type {conn_type}")
 
     return AxolotlConfig(
         connections=connections,
-        metrics_config=default_metrics_config,
-        per_run_timeout_seconds=per_run_timeout_seconds
+        **config,
     )
+
+def parse_include_list(items: List[str] | None) -> List[IncludeDerictive] | None:
+    1/0
+    # TODO
 
 
 def load_config(config_path: str | Path = "config.yaml") -> AxolotlConfig:

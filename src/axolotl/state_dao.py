@@ -8,6 +8,7 @@ from datetime import timezone
 from contextlib import contextmanager
 import simplejson as json  # for Decimal support
 import traceback
+import re
 
 
 class Run(NamedTuple):
@@ -16,9 +17,36 @@ class Run(NamedTuple):
     finished_at: Optional[datetime]
     successful: Optional[bool]
 
+class FqTable(NamedTuple):
+    database: str
+    schema: str
+    table: str
+
+    def __str__(self):
+        return '.'.join(
+            p if re.match(r'[a-zA-Z_][a-zA-Z0-9_]*', p)
+            else '"' + p.replace('"', '""') + '"'
+            for p in [
+                self.database,
+                self.schema,
+                self.table,
+            ]
+        )
+
+    @staticmethod
+    def from_string(v: str) -> FqTable:
+        m = re.match(r'^([^".]+|"(?:""|[^"])+")\.([^".]+|"(?:""|[^"])+")\.([^".]+|"(?:""|[^"])+")$', v)
+        if not m:
+            raise ValueError(f'Cannot parse fully qualified table name from {v}')
+        return FqTable(
+            m.group(1),
+            m.group(2),
+            m.group(3),
+        )
+
 class Metric(NamedTuple):
     run_id: int
-    target_table: str
+    target_table: FqTable
     target_column: Optional[str]
     metric_name: str
     metric_value: Any
@@ -231,7 +259,7 @@ class StateDAO:
         return [
             Metric(
                 row[0],
-                row[1],
+                FqTable.from_string(row[1]),
                 row[2],
                 row[3],
                 parse_datetime(row[4]) if row[5] else json.loads(row[4]),
