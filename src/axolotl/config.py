@@ -13,14 +13,15 @@ import inspect
 
 import snowflake.connector
 from pydantic import BaseModel, model_validator
+from .state_dao import IncludeDerictive
 
 
 class BaseConnectionConfig(BaseModel):
     name: str
     type: str
     params: Dict[str, Any]
-    include: Optional[List[str]] = None
-    exclude: List[str] = []
+    include: Optional[List[IncludeDerictive]] = None
+    exclude: List[IncludeDerictive] = []
 
     max_threads: Optional[int] = None
     run_timeout_seconds: Optional[int] = None
@@ -152,8 +153,8 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
                 **conn_config,
                 'name': conn_name,
                 'type': 'snowflake',
-                'include': parse_include_list(conn_config.get(include)),
-                'exclude': parse_include_list(conn_config.get(exclude)),
+                'include': parse_include_list(conn_config.get("include", None)),
+                'exclude': parse_include_list(conn_config.get("exclude", [])),
             }
             connections[conn_name] = SnowflakeConnectionConfig(**opts)
         else:
@@ -165,9 +166,15 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     )
 
 def parse_include_list(items: List[str] | None) -> List[IncludeDerictive] | None:
-    1/0
-    # TODO
-
+    if items is None:
+        return None
+    for item in items:
+        if not isinstance(item, str):
+            raise ValueError(f"Include and Exclude rules must be strings. Found {item!r}")
+    return [
+        IncludeDerictive.from_string(item)
+        for item in items
+    ]
 
 def load_config(config_path: str | Path = "config.yaml") -> AxolotlConfig:
     """

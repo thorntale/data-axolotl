@@ -17,6 +17,33 @@ class Run(NamedTuple):
     finished_at: Optional[datetime]
     successful: Optional[bool]
 
+ident = r'([^":.]+|"(""|[^"])+")'
+metric = r'([^.:]+)'
+fq_table_regex = (
+    rf'|(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})'
+)
+include_derective_regex = (
+    rf'(?P<database>{ident})'
+    rf'|(?P<database>{ident})\.(?P<schema>{ident})'
+    rf'|(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})'
+    rf'|(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident}):(?P<metric>{metric})'
+    rf'|(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})\.(?P<column>{ident})'
+    rf'|(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})\.(?P<column>{ident}):(?P<metric>{metric})'
+)
+
+def parse_ident(sql_ident: str) -> str:
+    if ident[0] == '"' and ident[-1] == '"':
+        return ident[1:-1].replace('""', '"')
+    elif '"' in sql_ident:
+        raise TypeError(f'Unparsable sql identifier {sql_ident!r}')
+    else:
+        return ident
+def parse_maybe_ident(sql_ident: str | None) -> str | None:
+    if sql_ident is None:
+        return None
+    else:
+        return parse_ident(sql_ident)
+
 class FqTable(NamedTuple):
     database: str
     schema: str
@@ -35,14 +62,51 @@ class FqTable(NamedTuple):
 
     @staticmethod
     def from_string(v: str) -> FqTable:
-        m = re.match(r'^([^".]+|"(?:""|[^"])+")\.([^".]+|"(?:""|[^"])+")\.([^".]+|"(?:""|[^"])+")$', v)
+        m = re.match(fq_table_regex, v)
         if not m:
             raise ValueError(f'Cannot parse fully qualified table name from {v}')
         return FqTable(
-            m.group(1),
-            m.group(2),
-            m.group(3),
+            parse_ident(m.group('database')),
+            parse_ident(m.group('schema')),
+            parse_ident(m.group('table')),
         )
+
+class IncludeDerictive(NamedTuple):
+    database: str
+    schema: str | None
+    table: str | None
+    column: str | None
+    metric: str | None
+
+    @staticmethod
+    def from_string(v: str) -> IncludeDerictive:
+        m = re.match(r'^([^".]+|"(?:""|[^"])+")\.([^".]+|"(?:""|[^"])+")\.([^".]+|"(?:""|[^"])+")$', v)
+        if not m:
+            raise ValueError(f'Cannot parse fully qualified table name from {v}')
+        return IncludeDerictive(
+            parse_ident(m.group('database')),
+            parse_maybe_ident(m.group('schema')),
+            parse_maybe_ident(m.group('table')),
+            parse_maybe_ident(m.group('column')),
+            parse_maybe_ident(m.group('metric')),
+        )
+
+    @property
+    def database_lower(self):
+        return None if self.database is None else self.database.lower()
+    @property
+    def schema_lower(self):
+        return None if self.schema is None else self.schema.lower()
+    @property
+    def table_lower(self):
+        return None if self.table is None else self.table.lower()
+    @property
+    def column_lower(self):
+        return None if self.column is None else self.column.lower()
+    @property
+    def metric_lower(self):
+        return None if self.metric is None else self.metric.lower()
+
 
 class Metric(NamedTuple):
     run_id: int
