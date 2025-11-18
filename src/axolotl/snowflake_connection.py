@@ -27,7 +27,6 @@ from .config import AxolotlConfig, Database
 from .state_dao import Metric
 from .live_run_console import LiveConsole
 from .metric_query import QueryStatus, MetricQuery
-from .threadsafe_collections import ThreadSafeDict
 
 
 def to_string_array(items: List[str] | None) -> str:
@@ -341,7 +340,7 @@ class SnowflakeConn:
         num_failed = 0  # Count of failed queries
 
         # FIXME: this is immoral and depraved. We should be locking this.
-        running_queries = {}  # ThreadSafeDict()
+        running_queries = {}
 
         def update():
             if isinstance(self.console, LiveConsole):
@@ -358,49 +357,29 @@ class SnowflakeConn:
             )
             qid = rq.query_id
             assert qid
-            assert rq.timeout_at
-
-            # self.console.print(
-            #    f"Started query ({qid}): {rq.fq_table_name}.{rq.column_name} ({rq.query_detail})"
-            # )
 
             if rq.status != QueryStatus.STARTED:
                 # Query failed to start
                 self.console.print(
                     f"Failed to start: {rq.fq_table_name}.{rq.column_name} [{rq.query_detail}]"
                 )
-                # running_queries.remove(rq)
-                # TODO: raise a better exception instead
-                # del running_queries[qid]
                 raise Exception("Failed to start query")
-
-            i = 0
             running_queries[qid] = rq
-            while not self.conn.is_still_running(
+
+            while self.conn.is_still_running(
                 self.conn.get_query_status(rq.query_id)
             ):
-                i += 1
-                if i > 1000:
-                    self.console.print(self.conn.get_query_status(rq.query_id))
                 time.sleep(0.1)
                 if is_timed_out([rq.timeout_at, db_deadline]):
-                    # running_queries.remove(rq)
                     del running_queries[qid]
+                    self._cancel_queries([rq.query_id])
                     self.console.print(
                         f"Timed out: ({qid}): {rq.fq_table_name}.{rq.column_name} ({rq.query_detail}) at {rq.timeout_at} (current time {time.monotonic()})"
                     )
                     raise TimeoutError(
                         f"Timed out: {rq.fq_table_name}.{rq.column_name} ({rq.query_detail})"
                     )
-
             del running_queries[qid]
-            self.console.print(
-                f"Finished query ({qid}): {rq.fq_table_name}.{rq.column_name} ({rq.query_detail})"
-            )
-
-            ## remove it before getting results so we don't get stuck
-            # running_queries.remove(rq)
-            # del running_queries[qid]
 
             try:
                 with self.conn.cursor(DictCursor) as cur:
@@ -414,42 +393,24 @@ class SnowflakeConn:
                         rq.column_name,
                         results,
                     )
-                    # self.console.print(
-                    #   f"Finished query ({qid}): {rq.fq_table_name}.{rq.column_name} ({rq.query_detail})"
-                    # )
-                    # return rq._replace(status=QueryStatus.DONE), extracted_metrics
                     return extracted_metrics
             except Exception as e:
                 self.console.print(
                     f"Error processing results for ({qid}): {rq.fq_table_name}.{rq.column_name} ({rq.query_detail})"
                 )
-                # self.console.print(traceback.format_exc())
                 raise e
-
-        # finally:
-        #     #self.console.print(f"Error processing results for ({rq.qid})")
-        #     self.console.print(f"Removing ({rq.qid})")
-        #     running_queries.remove(rq)
-        # return rq._replace(status=QueryStatus.ERROR), []
-        # finally:
-        #    self.console.print("removing q from running_queries")
-        #    running_queries.remove(rq)
 
         # subtract the time we took to query the table stats and do setup, and
         # that's what we'll give the executor to run the column queries.
-        queries_timeout = database.metrics_config.per_database_timeout_seconds - (
-            time.monotonic() - t_db_start
-        )
-
-        dummy_timeout = time.monotonic() + 10
-
         executor = ThreadPoolExecutor(max_workers=database.metrics_config.max_threads)
         future_to_mq = {
             executor.submit(run_and_wait, mq): mq for mq in all_metric_queries
         }
-        self.console.print("luanched futures")
 
-        for future in as_completed(future_to_mq, timeout=10000):
+        queries_timeout = database.metrics_config.per_database_timeout_seconds - (
+            time.monotonic() - t_db_start
+        )
+        for future in as_completed(future_to_mq, timeout=queries_timeout):
             # self.console.print("as_completed triggered")
             mq = future_to_mq[future]
             try:
@@ -458,29 +419,15 @@ class SnowflakeConn:
                 mq._replace(status=QueryStatus.DONE)
                 num_successful += 1
             except Exception as exc:
-                # self.console.print("exc")
-                self._cancel_queries([mq.query_id])
-                # self.console.print(exc)
                 mq._replace(status=QueryStatus.ERROR)
                 num_failed += 1
-                # running_queries.remove(mq)
                 update()
-                # self.console.print("next")
 
             else:
-                # self.console.print("else")
-                # running_queries.remove(mq)
                 update()
                 yield from result
 
-                # if is_timed_out([db_deadline, dummy_timeout]):
-                # self.console.print("db timeout")
-                # executor.shutdown(wait=False, cancel_futures=True)
-                # raise TimeoutError("dealdine")
-                # break
-                # return
-
-        self.console.print("out")
+        # By this time, we've for db_timeout amount of time; shut down the executor
         executor.shutdown(wait=False, cancel_futures=True)
 
         if len(running_queries) > 0:
