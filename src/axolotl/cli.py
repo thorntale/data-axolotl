@@ -66,6 +66,7 @@ def run(
 
     config = load_config(config_path)
     t_run_start = time.monotonic()
+    run_timeout_at = t_run_start + config.per_run_timeout_seconds
 
     with live_run_console() as console:
         with state.make_run() as run_id:
@@ -73,7 +74,7 @@ def run(
 
             for name in config.connections.keys():
                 with SnowflakeConn(config, name, run_id, console) as snowflake_conn:
-                    for m in snowflake_conn.snapshot(t_run_start):
+                    for m in snowflake_conn.snapshot(run_timeout_at):
                         try:
                             state.record_metric(m)
                         except Exception as e:
