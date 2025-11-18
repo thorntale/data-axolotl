@@ -1,20 +1,21 @@
-from typing import Set, Optional, NamedTuple, Tuple, List, Generator
+from typing import Dict, Set, Optional, NamedTuple, Tuple, List, Generator
 # from typing import override
 from enum import Enum
 import itertools
 from statistics import stdev
+from collections import defaultdict
 
 import humanize
 
 from .trackers import MetricTracker, MetricAlert, MetricKey, AlertSeverity, AlertMethod
-from .state_dao import Metric
+from .state_dao import Metric, Run
 from . import derived_metrics
 from . import trackers as ts
 from .snowflake_connection import SimpleDataType
 
 
 class MetricSet:
-    def __init__(self, runs, metrics):
+    def __init__(self, runs: List[Run], metrics: List[Metric]):
         self.latest_run_id = max(r.run_id for r in runs)
         self.runs = runs
         self.run_times_by_id = {
@@ -22,6 +23,11 @@ class MetricSet:
             for r in self.runs
         }
         self.metrics = metrics
+        # do the group by once so we don't have to filter the whole list each time
+        self.grouped_metrics: Dict[Tuple[str, str | None, str], List[Metric]] = defaultdict(list)
+        for m in metrics:
+            self.grouped_metrics[(m.target_table, m.target_column, m.metric_name)].append(m)
+
         # alertable metrics must have non-null values in the last 2 runs
         self.alertable_metric_keys = {
             MetricKey(m.target_table, m.target_column, m.metric_name)
@@ -239,12 +245,11 @@ class MetricSet:
         if type_constrained is True, only include metrics where the column's
         `data_type_simple` matches the latest `data_type_simple`
         """
-        matching_metrics = [
-            m for m in self.metrics
-            if m.target_table == key.target_table
-            and m.target_column == key.target_column
-            and m.metric_name == key.metric_name
-        ]
+        matching_metrics = self.grouped_metrics[(
+            key.target_table,
+            key.target_column,
+            key.metric_name,
+        )]
 
         if type_constrained:
             if key.target_column is None:

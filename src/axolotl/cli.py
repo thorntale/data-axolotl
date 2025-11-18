@@ -5,6 +5,7 @@ from typing_extensions import Annotated
 from rich.markup import escape
 from rich.console import Console
 import time
+from importlib.metadata import version
 
 import typer
 from tabulate import tabulate
@@ -21,6 +22,21 @@ import traceback
 
 app = typer.Typer()
 
+def version_callback(value: bool):
+    if value:
+        typer.echo(version('axolotl'))
+        raise typer.Exit()
+
+@app.callback()
+def main(
+    version: Annotated[bool, typer.Option(
+        '--version',
+        help="Show the current version and exit.",
+        callback=version_callback,
+        is_eager=True,
+    )] = False,
+):
+    pass
 
 @app.command()
 def run(

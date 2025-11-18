@@ -366,9 +366,7 @@ class SnowflakeConn:
                 raise Exception("Failed to start query")
             running_queries[qid] = rq
 
-            while self.conn.is_still_running(
-                self.conn.get_query_status(rq.query_id)
-            ):
+            while self.conn.is_still_running(self.conn.get_query_status(rq.query_id)):
                 time.sleep(0.1)
                 if is_timed_out([rq.timeout_at, db_deadline]):
                     del running_queries[qid]
@@ -407,10 +405,11 @@ class SnowflakeConn:
             executor.submit(run_and_wait, mq): mq for mq in all_metric_queries
         }
 
-        queries_timeout = database.metrics_config.per_database_timeout_seconds - (
+        assert database.metrics_config
+        db_timeout = database.metrics_config.per_database_timeout_seconds - (
             time.monotonic() - t_db_start
         )
-        for future in as_completed(future_to_mq, timeout=queries_timeout):
+        for future in as_completed(future_to_mq, timeout=db_timeout):
             # self.console.print("as_completed triggered")
             mq = future_to_mq[future]
             try:
