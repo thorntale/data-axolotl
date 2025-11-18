@@ -374,10 +374,14 @@ class SnowflakeConn:
                 # del running_queries[qid]
                 raise Exception("Failed to start query")
 
+            i = 0
             running_queries[qid] = rq
             while not self.conn.is_still_running(
                 self.conn.get_query_status(rq.query_id)
             ):
+                i += 1
+                if i > 1000:
+                    self.console.print(self.conn.get_query_status(rq.query_id))
                 time.sleep(0.1)
                 if is_timed_out([rq.timeout_at, db_deadline]):
                     # running_queries.remove(rq)
