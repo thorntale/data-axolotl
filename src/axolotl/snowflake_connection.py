@@ -28,140 +28,17 @@ from .config import AxolotlConfig, SnowflakeConnectionConfig
 from .state_dao import Metric, FqTable
 from .live_run_console import LiveConsole
 from .metric_query import QueryStatus, MetricQuery
+from .utils import is_timed_out
+from .snowflake_utils import (
+    extract_histogram,
+    extract_percentiles,
+    extract_simple_metrics,
+    get_simple_data_type
+)
+
+from .database_types import SimpleDataType, ColumnInfo
 
 
-def to_string_array(items: List[str] | None) -> str:
-    """
-    takes ["a", "b", "c"] -> "('a', 'b', 'c')"
-    """
-    return f"""('{ "', '".join(items or [])}')"""
-
-
-class SimpleDataType(Enum):
-    """Simple categorization of Snowflake data types"""
-
-    BOOLEAN = "boolean"
-    NUMERIC = "numeric"
-    STRING = "string"
-    DATETIME = "datetime"
-    STRUCTURED = "structured"
-    UNSTRUCTURED = "unstructured"
-    VECTOR = "vector"
-    OTHER = "other"
-
-
-class ColumnInfo(NamedTuple):
-    table: FqTable
-    column_name: str
-    data_type: str
-    data_type_simple: SimpleDataType
-
-
-def extract_simple_metrics(
-    run_id: int, fq_table_name: FqTable, column_name: str, results: Dict[str, Any]
-) -> List[Metric]:
-    """
-    Default extractor function that converts query results into Metric objects.
-
-    Args:
-        run_id: The run ID for these metrics
-        fq_table_name: Fully qualified table name
-        column_name: Column name
-        results: Dictionary of query results (from DictCursor.fetchone())
-
-    Returns:
-        List of Metric objects
-    """
-    metrics = []
-    measured_at = results["_measured_at"]
-
-    for metric_name, metric_value in results.items():
-        if metric_name.startswith("_"):
-            continue
-        metrics.append(
-            Metric(
-                run_id=run_id,
-                target_table=fq_table_name,
-                target_column=column_name,
-                metric_name=metric_name,
-                metric_value=metric_value,
-                measured_at=measured_at,
-            )
-        )
-    return metrics
-
-
-SNOWFLAKE_NUMERIC_TYPES = [
-    "NUMBER",
-    "DECIMAL",
-    "NUMERIC",
-    "INT",
-    "INTEGER",
-    "BIGINT",
-    "SMALLINT",
-    "TINYINT",
-    "BYTEINT",
-    "FLOAT",
-    "FLOAT4",
-    "FLOAT8",
-    "DOUBLE",
-    "DOUBLE PRECISION",
-    "REAL",
-]
-
-SNOWFLAKE_TEXT_TYPES = [
-    "VARCHAR",
-    "CHAR",
-    "CHARACTER",
-    "STRING",
-    "TEXT",
-    "BINARY",
-    "VARBINARY",
-]
-
-SNOWFLAKE_DATETIME_TYPES = [
-    "DATE",
-    "DATETIME",
-    "TIME",
-    "TIMESTAMP",
-    "TIMESTAMP_LTZ",
-    "TIMESTAMP_NTZ",
-    "TIMESTAMP_TZ",
-]
-
-SNOWFLAKE_STRUCTURED_TYPES = [
-    "VARIANT",
-    "OBJECT",
-    "ARRAY",
-    "MAP",
-]
-
-SNOWFLAKE_UNSTRUCTURED_TYPES = [
-    "FILE",
-]
-
-SNOWFLAKE_VECTOR_TYPES = [
-    "VECTOR",
-]
-
-def get_simple_data_type(data_type: str) -> SimpleDataType:
-    data_type = data_type.upper()
-    if data_type == "BOOLEAN":
-        return SimpleDataType.BOOLEAN
-    if data_type in SNOWFLAKE_NUMERIC_TYPES:
-        return SimpleDataType.NUMERIC
-    if data_type in SNOWFLAKE_TEXT_TYPES:
-        return SimpleDataType.STRING
-    if data_type in SNOWFLAKE_DATETIME_TYPES:
-        return SimpleDataType.DATETIME
-    if data_type in SNOWFLAKE_STRUCTURED_TYPES:
-        return SimpleDataType.STRUCTURED
-    if data_type in SNOWFLAKE_UNSTRUCTURED_TYPES:
-        return SimpleDataType.UNSTRUCTURED
-    if data_type in SNOWFLAKE_VECTOR_TYPES:
-        return SimpleDataType.VECTOR
-    else:
-        return SimpleDataType.OTHER
 
 
 class SnowflakeConn:
@@ -192,10 +69,23 @@ class SnowflakeConn:
 
         self.max_threads = connection_config.max_threads or config.max_threads
         self.run_timeout_seconds = config.run_timeout_seconds
-        self.connection_timeout_seconds = connection_config.connection_timeout_seconds or config.connection_timeout_seconds
-        self.query_timeout_seconds = connection_config.query_timeout_seconds or config.query_timeout_seconds
-        self.exclude_expensive_queries = connection_config.exclude_expensive_queries if connection_config.exclude_expensive_queries is not None else config.exclude_expensive_queries
-        self.exclude_complex_queries = connection_config.exclude_complex_queries if connection_config.exclude_complex_queries is not None else config.exclude_complex_queries
+        self.connection_timeout_seconds = (
+            connection_config.connection_timeout_seconds
+            or config.connection_timeout_seconds
+        )
+        self.query_timeout_seconds = (
+            connection_config.query_timeout_seconds or config.query_timeout_seconds
+        )
+        self.exclude_expensive_queries = (
+            connection_config.exclude_expensive_queries
+            if connection_config.exclude_expensive_queries is not None
+            else config.exclude_expensive_queries
+        )
+        self.exclude_complex_queries = (
+            connection_config.exclude_complex_queries
+            if connection_config.exclude_complex_queries is not None
+            else config.exclude_complex_queries
+        )
 
         # self.databases = self.connection_options.databases
         self.run_id = run_id
@@ -246,7 +136,6 @@ class SnowflakeConn:
             all_metric_queries.extend(self._generate_column_queries(c_info))
 
         return all_metric_queries, table_metrics
-
 
     def run_metric_query(
         self, metric_query: MetricQuery, per_query_timeout: float
@@ -306,9 +195,7 @@ class SnowflakeConn:
 
         all_metric_queries.sort(key=query_priority)
 
-        self.console.print(
-            f"Snapshotting using {len(all_metric_queries)} queries..."
-        )
+        self.console.print(f"Snapshotting using {len(all_metric_queries)} queries...")
         num_queries = len(all_metric_queries)
         num_successful = 0  # Count of successful queries
         num_failed = 0  # Count of failed queries
@@ -326,9 +213,7 @@ class SnowflakeConn:
                 )
 
         def run_and_wait(metric_query: MetricQuery) -> List[Metric]:
-            rq = self.run_metric_query(
-                metric_query, self.query_timeout_seconds
-            )
+            rq = self.run_metric_query(metric_query, self.query_timeout_seconds)
             qid = rq.query_id
             assert qid
 
@@ -492,7 +377,9 @@ class SnowflakeConn:
         return {
             metric: query
             for metric, query in queries.items()
-            if self.connection_config.include_column_metric(column_info.table, column_info.column_name, metric)
+            if self.connection_config.include_column_metric(
+                column_info.table, column_info.column_name, metric
+            )
         }
 
     def _generate_column_queries(self, column_info: ColumnInfo) -> List[MetricQuery]:
@@ -566,20 +453,6 @@ class SnowflakeConn:
                 """
 
                 # Custom extractor for percentiles
-                def extract_percentiles(
-                    run_id: int, fq_table: FqTable, col: str, results: Dict[str, Any]
-                ) -> List[Metric]:
-                    return [
-                        Metric(
-                            run_id=run_id,
-                            target_table=fq_table,
-                            target_column=col,
-                            metric_name="numeric_percentiles",
-                            metric_value=json.loads(results["NUMERIC_PERCENTILES"]),
-                            measured_at=results["_measured_at"],
-                        )
-                    ]
-
                 queries.append(
                     MetricQuery(
                         query=percentile_query,
@@ -588,7 +461,7 @@ class SnowflakeConn:
                         timeout_at=0.0,
                         fq_table_name=column_info.table,
                         column_name=column_info.column_name,
-                        metrics=['numeric_percentiles'],
+                        metrics=["numeric_percentiles"],
                         query_detail="numeric_percentiles",
                         result_extractor=extract_percentiles,
                     )
@@ -649,25 +522,6 @@ class SnowflakeConn:
                         END as NUMERIC_HISTOGRAM
                     FROM minmax;
                 """
-
-                # Custom extractor for histogram
-                def extract_histogram(
-                    run_id: int, fq_table: FqTable, col: str, results: Dict[str, Any]
-                ) -> List[Metric]:
-                    return [
-                        Metric(
-                            run_id=run_id,
-                            target_table=fq_table,
-                            target_column=col,
-                            metric_name="numeric_histogram",
-                            metric_value=(
-                                results["NUMERIC_HISTOGRAM"]
-                                if isinstance(results["NUMERIC_HISTOGRAM"], dict)
-                                else json.loads(results["NUMERIC_HISTOGRAM"])
-                            ),
-                            measured_at=results["_MEASURED_AT"],
-                        )
-                    ]
 
                 queries.append(
                     MetricQuery(
@@ -816,8 +670,9 @@ class SnowflakeConn:
         column_info_arr: List[ColumnInfo] = []
 
         with self.conn.cursor() as cur:
-            cur.execute(' union all '.join(
-                f"""
+            cur.execute(
+                " union all ".join(
+                    f"""
                     select
                         table_catalog,
                         column_name,
@@ -827,10 +682,18 @@ class SnowflakeConn:
                         table_name
                     from "{database}".information_schema.columns
                 """
-                for database in databases
-            ))
+                    for database in databases
+                )
+            )
 
-            for table_catalog, column_name, data_type, is_nullable, table_schema, table_name in cur:
+            for (
+                table_catalog,
+                column_name,
+                data_type,
+                is_nullable,
+                table_schema,
+                table_name,
+            ) in cur:
                 fq_table = FqTable(table_catalog, table_schema, table_name)
                 if self.connection_config.include_column(fq_table, column_name):
                     column_info_arr.append(
@@ -846,8 +709,8 @@ class SnowflakeConn:
 
     def list_included_databases(self) -> List[str]:
         with self.conn.cursor(DictCursor) as cur:
-            cur.execute('show databases')
-            all_databases = [row['name'] for row in cur.fetchall()]
+            cur.execute("show databases")
+            all_databases = [row["name"] for row in cur.fetchall()]
 
         return [
             database
@@ -876,7 +739,8 @@ class SnowflakeConn:
         for database in databases:
             with self.conn.cursor(DictCursor) as cur:
                 try:
-                    cur.execute(f"""
+                    cur.execute(
+                        f"""
                         SELECT
                             TABLE_CATALOG,
                             TABLE_SCHEMA,
@@ -887,7 +751,8 @@ class SnowflakeConn:
                             LAST_ALTERED,
                             CURRENT_TIMESTAMP() as measured_at
                         FROM "{database}".INFORMATION_SCHEMA.TABLES
-                    """)
+                    """
+                    )
 
                 except Exception:
                     self.console.print("Error running table scan query")
@@ -896,11 +761,11 @@ class SnowflakeConn:
 
                 for row in cur:
                     fq_table_name = FqTable(
-                        row['TABLE_CATALOG'],
-                        row['TABLE_SCHEMA'],
-                        row['TABLE_NAME'],
+                        row["TABLE_CATALOG"],
+                        row["TABLE_SCHEMA"],
+                        row["TABLE_NAME"],
                     )
-                    measured_at = row['MEASURED_AT']
+                    measured_at = row["MEASURED_AT"]
 
                     if self.connection_config.include_table_at_all(fq_table_name):
                         fq_table_names.append(fq_table_name)
@@ -916,7 +781,7 @@ class SnowflakeConn:
                             target_table=fq_table_name,
                             target_column=None,
                             metric_name="row_count",
-                            metric_value=row['ROW_COUNT'],
+                            metric_value=row["ROW_COUNT"],
                             measured_at=measured_at,
                         ),
                         Metric(
@@ -924,7 +789,7 @@ class SnowflakeConn:
                             target_table=fq_table_name,
                             target_column=None,
                             metric_name="bytes",
-                            metric_value=row['BYTES'],
+                            metric_value=row["BYTES"],
                             measured_at=measured_at,
                         ),
                         Metric(
@@ -932,7 +797,7 @@ class SnowflakeConn:
                             target_table=fq_table_name,
                             target_column=None,
                             metric_name="created_at",
-                            metric_value=row['CREATED'],
+                            metric_value=row["CREATED"],
                             measured_at=measured_at,
                         ),
                         Metric(
@@ -940,23 +805,29 @@ class SnowflakeConn:
                             target_table=fq_table_name,
                             target_column=None,
                             metric_name="altered_at",
-                            metric_value=row['LAST_ALTERED'],
+                            metric_value=row["LAST_ALTERED"],
                             measured_at=measured_at,
                         ),
                     ]
 
         with self.conn.cursor() as cur:
             try:
-                tables = [t for t in fq_table_names if self.connection_config.include_table_metrics(fq_table_name)]
+                tables = [
+                    t
+                    for t in fq_table_names
+                    if self.connection_config.include_table_metrics(fq_table_name)
+                ]
                 if not tables:
                     results = []
                 else:
-                    cur.execute(f"""
+                    cur.execute(
+                        f"""
                         select {','.join(
                             f"TO_TIMESTAMP_TZ(SYSTEM$LAST_CHANGE_COMMIT_TIME('{table}') / 1e9)"
                             for table in tables
                         )}
-                    """)
+                    """
+                    )
                     results = cur.fetchone()
                     assert results
             except Exception:
@@ -977,16 +848,3 @@ class SnowflakeConn:
             ]
 
         return metrics, fq_table_names
-
-
-def is_timed_out(deadlines: List[float]):
-    """
-    Given a list of monotonic timeout times, check whether we've gone past any of them.
-    Args:
-        deadlines: List of time.monotonic() + timeout durations
-
-    Returns:
-        True if we've passed any of the deadlines,
-    """
-
-    return time.monotonic() > min(deadlines)
