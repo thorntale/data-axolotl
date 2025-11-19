@@ -14,6 +14,7 @@ from .trackers import AlertSeverity
 from .display_utils import pretty_table_name
 
 from .trackers import MetricTracker, MetricAlert, MetricKey
+from .state_dao import FqTable
 
 class AlertReport:
     console = Console()
@@ -37,7 +38,7 @@ class AlertReport:
         all_alerts = self.metric_set.get_all_alerts()
 
         # severity -> table -> column|None -> alert
-        grouped_alerts: Dict[AlertSeverity, Dict[str, Dict[str|None, List[MetricAlert]]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        grouped_alerts: Dict[AlertSeverity, Dict[FqTable, Dict[str|None, List[MetricAlert]]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
         for a in all_alerts:
             grouped_alerts[a.alert_severity][a.key.target_table][a.key.target_column] += [a]

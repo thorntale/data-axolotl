@@ -492,7 +492,7 @@ class SnowflakeConn:
         return {
             metric: query
             for metric, query in queries.items()
-            if self.include_column_metric(column_info.table, column_info.column_name, metric)
+            if self.connection_config.include_column_metric(column_info.table, column_info.column_name, metric)
         }
 
     def _generate_column_queries(self, column_info: ColumnInfo) -> List[MetricQuery]:
@@ -832,7 +832,7 @@ class SnowflakeConn:
 
             for table_catalog, column_name, data_type, is_nullable, table_schema, table_name in cur:
                 fq_table = FqTable(table_catalog, table_schema, table_name)
-                if self.include_column(fq_table, column_name):
+                if self.connection_config.include_column(fq_table, column_name):
                     column_info_arr.append(
                         ColumnInfo(
                             table=fq_table,
@@ -852,267 +852,8 @@ class SnowflakeConn:
         return [
             database
             for database in all_databases
-            if self.database_is_included_at_all(database)
+            if self.connection_config.database_is_included_at_all(database)
         ]
-
-    def database_is_included_at_all(self, database: str) -> bool:
-        """ Return True if this database is included in _any_ metrics. """
-        for exc in self.connection_config.exclude:
-            if exc.schema is None and exc.database_lower == database.lower():
-                return False
-        if self.connection_config.include is None:
-            return True
-        for inc in self.connection_config.include:
-            if inc.database_lower == database.lower():
-                return True
-        return False
-
-    def include_table_at_all(self, table: FqTable) -> bool:
-        """ Whether this table or any of its columns are included """
-        if table.schema.lower() == 'information_schema':
-            return False
-        # check for excluding specifically this table, schema, or db
-        for exc in self.connection_config.exclude:
-            if (
-                exc.database_lower == table.database.lower()
-                and exc.schema_lower == table.schema.lower()
-                and exc.table_lower == table.table.lower()
-                and exc.column is None
-                and exc.metric is None
-            ):
-                return False
-            if (
-                exc.database_lower == table.database.lower()
-                and exc.schema_lower == table.schema.lower()
-                and exc.table is None
-                and exc.column is None
-                and exc.metric is None
-            ):
-                return False
-            if (
-                exc.database.lower() == table.database.lower()
-                and exc.schema is None
-                and exc.table is None
-                and exc.column is None
-                and exc.metric is None
-            ):
-                return False
-        if self.connection_config.include is None:
-            return True
-        for inc in self.connection_config.include:
-            # match db.schema.table, db.schema.table:metric, db.schema.table.column, db.schema.table.column:metric
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table_lower == table.table.lower()
-            ):
-                return True
-            # match db.schema
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table is None
-            ):
-                return True
-            # match db
-            if (
-                inc.database.lower() == table.database.lower()
-                and inc.schema is None
-            ):
-                return True
-        return False
-
-    def include_table_metrics(self, table: FqTable) -> bool:
-        """ Whether this table itself is included """
-        if table.schema.lower() == 'information_schema':
-            return False
-        # check for excluding specifically this table
-        for exc in self.connection_config.exclude:
-            if (
-                exc.database_lower == table.database.lower()
-                and exc.schema_lower == table.schema.lower()
-                and exc.table_lower == table.table.lower()
-                and exc.column is None
-                and exc.metric is None
-            ):
-                return False
-            if (
-                exc.database_lower == table.database.lower()
-                and exc.schema_lower == table.schema.lower()
-                and exc.table is None
-                and exc.column is None
-                and exc.metric is None
-            ):
-                return False
-            if (
-                exc.database_lower == table.database.lower()
-                and exc.schema is None
-                and exc.table is None
-                and exc.column is None
-                and exc.metric is None
-            ):
-                return False
-        if self.connection_config.include is None:
-            return True
-        for inc in self.connection_config.include:
-            # match db.schema.table but NOT db.schema.table.column
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table_lower == table.table.lower()
-                and inc.column is None
-            ):
-                return True
-            # match db.schema
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table is None
-            ):
-                return True
-            # match db
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema is None
-            ):
-                return True
-        return False
-
-    def include_column(self, table: FqTable, column: str) -> bool:
-        """ Whether this column is included in metrics """
-        if table.schema.lower() == 'information_schema':
-            return False
-        # check for excluding specifically this column
-        for exc in self.connection_config.exclude:
-            # exclude whole column
-            if (
-                exc.database_lower == table.database.lower()
-                and exc.schema_lower == table.schema.lower()
-                and exc.table_lower == table.table.lower()
-                and exc.column_lower == column.lower()
-                and exc.metric is None
-            ):
-                return False
-            # exclude whole table
-            if (
-                exc.database_lower == table.database.lower()
-                and exc.schema_lower == table.schema.lower()
-                and exc.table_lower == table.table.lower()
-                and exc.column is None
-                and exc.metric is None
-            ):
-                return False
-            # exclude whole schema
-            if (
-                exc.database_lower == table.database.lower()
-                and exc.schema_lower == table.schema.lower()
-                and exc.table is None
-                and exc.column is None
-                and exc.metric is None
-            ):
-                return False
-            # exclude whole db
-            if (
-                exc.database_lower == table.database.lower()
-                and exc.schema is None
-                and exc.table is None
-                and exc.column is None
-                and exc.metric is None
-            ):
-                return False
-        if self.connection_config.include is None:
-            return True
-        for inc in self.connection_config.include:
-            # match db.schema.table.column, db.schema.table.column:metric
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table_lower == table.table.lower()
-                and inc.column_lower == column.lower()
-            ):
-                return True
-            # match db.schema.table
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table_lower == table.table.lower()
-                and inc.column is None
-            ):
-                return True
-            # match db.schema
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table is None
-            ):
-                return True
-            # match db
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema is None
-            ):
-                return True
-        return False
-
-    def include_column_metric(self, table: FqTable, column: str, metric: str) -> bool:
-        if table.schema.lower() == 'information_schema':
-            return False
-        if not self.include_column(table, column):
-            return False
-
-        for exc in self.connection_config.exclude:
-            # exclude specifically this metric
-            if (
-                exc.database_lower == table.database.lower()
-                and exc.schema_lower == table.schema.lower()
-                and exc.table_lower == table.table.lower()
-                and exc.column_lower == column.lower()
-                and exc.metric_lower == metric.lower()
-            ):
-                return False
-        if self.connection_config.include is None:
-            return True
-        for inc in self.connection_config.include:
-            # match db.schema.table.column:metric
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table_lower == table.table.lower()
-                and inc.column_lower == column.lower()
-                and inc.metric_lower == metric.lower()
-            ):
-                return True
-            # match db.schema.table.column
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table_lower == table.table.lower()
-                and inc.column_lower == column.lower()
-                and inc.metric_lower is None
-            ):
-                return True
-            # match db.schema.table
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table_lower == table.table.lower()
-                and inc.column is None
-            ):
-                return True
-            # match db.schema
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema_lower == table.schema.lower()
-                and inc.table is None
-            ):
-                return True
-            # match db
-            if (
-                inc.database_lower == table.database.lower()
-                and inc.schema is None
-            ):
-                return True
-        return False
 
     def scan_tables(self, databases: List[str]) -> Tuple[List[Metric], List[FqTable]]:
         """
@@ -1161,12 +902,12 @@ class SnowflakeConn:
                     )
                     measured_at = row['MEASURED_AT']
 
-                    if self.include_table_at_all(fq_table_name):
+                    if self.connection_config.include_table_at_all(fq_table_name):
                         fq_table_names.append(fq_table_name)
                     else:
                         continue
 
-                    if not self.include_table_metrics(fq_table_name):
+                    if not self.connection_config.include_table_metrics(fq_table_name):
                         continue
 
                     metrics += [
@@ -1206,7 +947,7 @@ class SnowflakeConn:
 
         with self.conn.cursor() as cur:
             try:
-                tables = [t for t in fq_table_names if self.include_table_metrics(fq_table_name)]
+                tables = [t for t in fq_table_names if self.connection_config.include_table_metrics(fq_table_name)]
                 if not tables:
                     results = []
                 else:

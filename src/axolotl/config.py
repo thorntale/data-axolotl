@@ -13,7 +13,7 @@ import inspect
 
 import snowflake.connector
 from pydantic import BaseModel, model_validator
-from .state_dao import IncludeDerictive
+from .state_dao import IncludeDerictive, FqTable
 
 
 class BaseConnectionConfig(BaseModel):
@@ -29,6 +29,266 @@ class BaseConnectionConfig(BaseModel):
     query_timeout_seconds: Optional[int] = None
     exclude_expensive_queries: Optional[bool] = None
     exclude_complex_queries: Optional[bool] = None
+
+    def database_is_included_at_all(self, database: str) -> bool:
+        """ Return True if this database is included in _any_ metrics. """
+        for exc in self.exclude:
+            if exc.schema is None and exc.database_lower == database.lower():
+                return False
+        if self.include is None:
+            return True
+        for inc in self.include:
+            if inc.database_lower == database.lower():
+                return True
+        return False
+
+    def include_table_at_all(self, table: FqTable) -> bool:
+        """ Whether this table or any of its columns are included """
+        if table.schema.lower() == 'information_schema':
+            return False
+        # check for excluding specifically this table, schema, or db
+        for exc in self.exclude:
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema_lower == table.schema.lower()
+                and exc.table_lower == table.table.lower()
+                and exc.column is None
+                and exc.metric is None
+            ):
+                return False
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema_lower == table.schema.lower()
+                and exc.table is None
+                and exc.column is None
+                and exc.metric is None
+            ):
+                return False
+            if (
+                exc.database.lower() == table.database.lower()
+                and exc.schema is None
+                and exc.table is None
+                and exc.column is None
+                and exc.metric is None
+            ):
+                return False
+        if self.include is None:
+            return True
+        for inc in self.include:
+            # match db.schema.table, db.schema.table:metric, db.schema.table.column, db.schema.table.column:metric
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table_lower == table.table.lower()
+            ):
+                return True
+            # match db.schema
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table is None
+            ):
+                return True
+            # match db
+            if (
+                inc.database.lower() == table.database.lower()
+                and inc.schema is None
+            ):
+                return True
+        return False
+
+    def include_table_metrics(self, table: FqTable) -> bool:
+        """ Whether this table itself is included """
+        if table.schema.lower() == 'information_schema':
+            return False
+        # check for excluding specifically this table
+        for exc in self.exclude:
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema_lower == table.schema.lower()
+                and exc.table_lower == table.table.lower()
+                and exc.column is None
+                and exc.metric is None
+            ):
+                return False
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema_lower == table.schema.lower()
+                and exc.table is None
+                and exc.column is None
+                and exc.metric is None
+            ):
+                return False
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema is None
+                and exc.table is None
+                and exc.column is None
+                and exc.metric is None
+            ):
+                return False
+        if self.include is None:
+            return True
+        for inc in self.include:
+            # match db.schema.table but NOT db.schema.table.column
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table_lower == table.table.lower()
+                and inc.column is None
+            ):
+                return True
+            # match db.schema
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table is None
+            ):
+                return True
+            # match db
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema is None
+            ):
+                return True
+        return False
+
+    def include_column(self, table: FqTable, column: str) -> bool:
+        """ Whether this column is included in metrics """
+        if table.schema.lower() == 'information_schema':
+            return False
+        # check for excluding specifically this column
+        for exc in self.exclude:
+            # exclude whole column
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema_lower == table.schema.lower()
+                and exc.table_lower == table.table.lower()
+                and exc.column_lower == column.lower()
+                and exc.metric is None
+            ):
+                return False
+            # exclude whole table
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema_lower == table.schema.lower()
+                and exc.table_lower == table.table.lower()
+                and exc.column is None
+                and exc.metric is None
+            ):
+                return False
+            # exclude whole schema
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema_lower == table.schema.lower()
+                and exc.table is None
+                and exc.column is None
+                and exc.metric is None
+            ):
+                return False
+            # exclude whole db
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema is None
+                and exc.table is None
+                and exc.column is None
+                and exc.metric is None
+            ):
+                return False
+        if self.include is None:
+            return True
+        for inc in self.include:
+            # match db.schema.table.column, db.schema.table.column:metric
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table_lower == table.table.lower()
+                and inc.column_lower == column.lower()
+            ):
+                return True
+            # match db.schema.table
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table_lower == table.table.lower()
+                and inc.column is None
+            ):
+                return True
+            # match db.schema
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table is None
+            ):
+                return True
+            # match db
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema is None
+            ):
+                return True
+        return False
+
+    def include_column_metric(self, table: FqTable, column: str, metric: str) -> bool:
+        if table.schema.lower() == 'information_schema':
+            return False
+        if not self.include_column(table, column):
+            return False
+
+        for exc in self.exclude:
+            # exclude specifically this metric
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema_lower == table.schema.lower()
+                and exc.table_lower == table.table.lower()
+                and exc.column_lower == column.lower()
+                and exc.metric_lower == metric.lower()
+            ):
+                return False
+        if self.include is None:
+            return True
+        for inc in self.include:
+            # match db.schema.table.column:metric
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table_lower == table.table.lower()
+                and inc.column_lower == column.lower()
+                and inc.metric_lower == metric.lower()
+            ):
+                return True
+            # match db.schema.table.column
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table_lower == table.table.lower()
+                and inc.column_lower == column.lower()
+                and inc.metric_lower is None
+            ):
+                return True
+            # match db.schema.table
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table_lower == table.table.lower()
+                and inc.column is None
+            ):
+                return True
+            # match db.schema
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table is None
+            ):
+                return True
+            # match db
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema is None
+            ):
+                return True
+        return False
+
 
 class SnowflakeConnectionConfig(BaseConnectionConfig):
     """Configuration options for Snowflake connections."""

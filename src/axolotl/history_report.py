@@ -16,6 +16,7 @@ from .display_utils import maybe_float
 from .trackers import MetricTracker
 from .trackers import ChartMode
 from .line_chart import Chart
+from .state_dao import FqTable
 
 from typing import Dict, Optional,Any
 
@@ -67,14 +68,14 @@ class HistoryReport:
                     for tracker in self.metric_set.get_metric_trackers_for_column(table, column):
                         self._print_tracker(tracker)
 
-    def _print_table_header(self, table: str):
+    def _print_table_header(self, table: FqTable):
         self.console.print(Panel.fit(
             f"[bold blue]{escape(pretty_table_name(table))}[/bold blue] - Table Metrics\n"
             f"[blue]{escape(str(table))}[/blue]",
             border_style='blue',
         ))
 
-    def _print_column_header(self, table: str, column: str):
+    def _print_column_header(self, table: FqTable, column: str):
         self.console.print(Panel.fit(
             f"[bold green]{escape(column.title())}[/bold green] - Column Metrics\n"
             f"[blue]{escape(str(table))}[/blue].[green]{escape(column)}[/green]",
