@@ -118,19 +118,61 @@ class Metric(NamedTuple):
     metric_value: Any
     measured_at: datetime
 
-    def matches_filter(self, filters: List[str]) -> bool:
-        def is_sublist_of(needle, haystack):
-            return any(
-                needle == haystack[i:i + len(needle)]
-                for i in range(0, len(haystack) - len(needle) + 1)
-            )
-        if not filters:
+    def matches_includes(self, includes: List[IncludeDerictive]) -> bool:
+        if not includes:
             return True
-        haystack = f"{self.target_table}.{self.target_column}".lower().split('.')
-        return any(
-            is_sublist_of(f.lower().split('.'), haystack)
-            for f in filters
-        )
+        for inc in includes:
+            if (
+                inc.database_lower == self.target_table.database.lower()
+                and inc.schema_lower is None
+                and inc.table_lower is None
+                and inc.column_lower is None
+                and inc.metric_lower is None
+            ):
+                return True
+            if (
+                inc.database_lower == self.target_table.database.lower()
+                and inc.schema_lower == self.target_table.schema.lower()
+                and inc.table_lower is None
+                and inc.column_lower is None
+                and inc.metric_lower is None
+            ):
+                return True
+            if (
+                inc.database_lower == self.target_table.database.lower()
+                and inc.schema_lower == self.target_table.schema.lower()
+                and inc.table_lower == self.target_table.table.lower()
+                and inc.column_lower is None
+                and inc.metric_lower is None
+            ):
+                return True
+            if self.target_column is None:
+                if (
+                    inc.database_lower == self.target_table.database.lower()
+                    and inc.schema_lower == self.target_table.schema.lower()
+                    and inc.table_lower == self.target_table.table.lower()
+                    and inc.column_lower is None
+                    and inc.metric_lower == self.metric_name.lower()
+                ):
+                    return True
+            else:
+                if (
+                    inc.database_lower == self.target_table.database.lower()
+                    and inc.schema_lower == self.target_table.schema.lower()
+                    and inc.table_lower == self.target_table.table.lower()
+                    and inc.column_lower == self.target_column.lower()
+                    and inc.metric_lower == self.metric_name.lower()
+                ):
+                    return True
+                if (
+                    inc.database_lower == self.target_table.database.lower()
+                    and inc.schema_lower == self.target_table.schema.lower()
+                    and inc.table_lower == self.target_table.table.lower()
+                    and inc.column_lower == self.target_column.lower()
+                    and inc.metric_lower is None
+                ):
+                    return True
+        return False
 
 class StateDAO:
     """

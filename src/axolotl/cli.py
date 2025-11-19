@@ -15,7 +15,7 @@ from .state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
 from .alert_report import AlertReport
-from .config import load_config, SnowflakeConnectionConfig
+from .config import load_config, SnowflakeConnectionConfig, IncludeDerictive
 from .live_run_console import live_run_console
 from .generate_config_interactive import generate_config_interactive
 import traceback
@@ -146,7 +146,7 @@ def rm_run(id: int):
 
 target_arg = typer.Argument(
     help="""
-        Generate a report for only matching objects. Supports: db, db.schema, db.schema.table, db.schema.table.column
+        Generate a report for only matching objects. Supports: db, db.schema, db.schema.table, db.schema.table:metric, db.schema.table.column, db.schema.table.column:metric
     """
 )
 run_id_arg = typer.Option(
@@ -159,7 +159,7 @@ save_arg = typer.Option(
 )
 
 def _get_metric_set(
-    target: List[str] = [],
+    includes: List[IncludeDerictive] = [],
     run_id: Optional[int] = None,
 ):
     state_conn = get_conn()
@@ -183,13 +183,12 @@ def _get_metric_set(
         if r.successful and r.run_id <= run_id
     ]
 
-    filters = [t for t in target if t]
     metrics = [
         m for m in state.get_metrics(
             run_id_lte=run_id,
             only_successful=True,
         )
-        if m.matches_filter(filters)
+        if not includes or m.matches_includes(includes)
     ]
 
     return MetricSet(filtered_runs, metrics)
@@ -203,7 +202,8 @@ def report(
     """
     Do only the report generation step of run.
     """
-    metric_set = _get_metric_set(target, run_id)
+    parsed_targets = [IncludeDerictive.from_string(t) for t in target]
+    metric_set = _get_metric_set(parsed_targets, run_id)
     AlertReport(metric_set).print(save)
     HistoryReport(metric_set).print(save)
 
@@ -214,7 +214,8 @@ def alerts(
     save: Annotated[Optional[Path], save_arg] = None,
 ):
     """ Show alerts """
-    metric_set = _get_metric_set(target, run_id)
+    parsed_targets = [IncludeDerictive.from_string(t) for t in target]
+    metric_set = _get_metric_set(parsed_targets, run_id)
     AlertReport(metric_set).print(save)
 
 @app.command()
@@ -224,7 +225,8 @@ def history(
     save: Annotated[Optional[Path], save_arg] = None,
 ):
     """ Show data history """
-    metric_set = _get_metric_set(target, run_id)
+    parsed_targets = [IncludeDerictive.from_string(t) for t in target]
+    metric_set = _get_metric_set(parsed_targets, run_id)
     HistoryReport(metric_set).print(save)
 
 def main():
