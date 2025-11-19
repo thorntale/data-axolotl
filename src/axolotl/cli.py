@@ -41,6 +41,10 @@ def version_arg(
 @app.command()
 def run(
     config_path: Annotated[Optional[Path], typer.Option(help="The run configuration file. Defaults to './config.yaml'")] = None,
+    list_only: Annotated[Optional[bool], typer.Option(
+        '--list-only',
+        help="List which metrics would be generated then exit",
+    )] = False,
 ):
     """
     Execute a new run. Takes a --config path/to/config.yaml
@@ -75,13 +79,17 @@ def run(
             for conn_config in config.connections.values():
                 if isinstance(conn_config, SnowflakeConnectionConfig):
                     with SnowflakeConn(config, conn_config, run_id, console) as snowflake_conn:
-                        for m in snowflake_conn.snapshot(run_timeout_at):
-                            try:
-                                state.record_metric(m)
-                            except Exception as e:
-                                print(f"Error recording metric: {e}")
-                                print(traceback.format_exc())
-                                raise
+                        if list_only:
+                            for m in snowflake_conn.list_only(run_timeout_at):
+                                console.print(m)
+                        else:
+                            for m in snowflake_conn.snapshot(run_timeout_at):
+                                try:
+                                    state.record_metric(m)
+                                except Exception as e:
+                                    print(f"Error recording metric: {e}")
+                                    print(traceback.format_exc())
+                                    raise
                 else:
                     raise TypeError('Unknown connection config type')
 

@@ -70,14 +70,14 @@ class HistoryReport:
     def _print_table_header(self, table: str):
         self.console.print(Panel.fit(
             f"[bold blue]{escape(pretty_table_name(table))}[/bold blue] - Table Metrics\n"
-            f"[blue]{escape(table)}[/blue]",
+            f"[blue]{escape(str(table))}[/blue]",
             border_style='blue',
         ))
 
     def _print_column_header(self, table: str, column: str):
         self.console.print(Panel.fit(
             f"[bold green]{escape(column.title())}[/bold green] - Column Metrics\n"
-            f"[blue]{escape(table)}[/blue].[green]{escape(column)}[/green]",
+            f"[blue]{escape(str(table))}[/blue].[green]{escape(column)}[/green]",
             border_style='green',
         ))
 

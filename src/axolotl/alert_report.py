@@ -59,7 +59,7 @@ class AlertReport:
 
             for table, alerts_by_column in sorted(alerts_by_table_column.items()):
                 self.console.print(Padding(
-                    f"[bold blue]{escape(pretty_table_name(table))}[/bold blue] [dim]({escape(table)}):",
+                    f"[bold blue]{escape(pretty_table_name(table))}[/bold blue] [dim]({escape(str(table))}):",
                     (0, 2),
                 ), highlight=False)
                 for alert in alerts_by_column[None]:

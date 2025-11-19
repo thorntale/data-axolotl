@@ -21,6 +21,7 @@ class MetricQuery(NamedTuple):
     # debug info
     fq_table_name: FqTable
     column_name: str
+    metrics: List[str]  # Which metrics this will produce when run
     query_detail: str
 
     # query results into Metric objects

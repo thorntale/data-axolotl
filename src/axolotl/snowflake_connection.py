@@ -216,7 +216,7 @@ class SnowflakeConn:
         conn_params,
     ):
         try:
-            return snowflake.connector.connect(conn_params)
+            return snowflake.connector.connect(**conn_params)
 
         except Exception:
             # TODO: Don't print sensitive connection params
@@ -225,6 +225,28 @@ class SnowflakeConn:
             )
             console.print(traceback.format_exc())
             raise
+
+    def scan_for_queries(self) -> Tuple[List[MetricQuery], List[Metric]]:
+        # scan the db and generate metric queries & table metrics
+        t_start = time.monotonic()
+
+        databases = self.list_included_databases()
+
+        table_metrics, table_names = self.scan_tables(databases)
+        t_tablescan = time.monotonic()  ## Time it took to scan the table metrics
+        self.console.print(
+            f"Found {len(table_names)} tables in {round(t_tablescan - t_start, 2)} seconds. Enumerating columns..."
+        )
+
+        all_column_infos: List[ColumnInfo] = self.list_columns(databases)
+
+        print(f"Generating queries for {len(all_column_infos)} columns...")
+        all_metric_queries: List[MetricQuery] = []
+        for c_info in all_column_infos:
+            all_metric_queries.extend(self._generate_column_queries(c_info))
+
+        return all_metric_queries, table_metrics
+
 
     def run_metric_query(
         self, metric_query: MetricQuery, per_query_timeout: float
@@ -272,23 +294,8 @@ class SnowflakeConn:
         t_connection_start = time.monotonic()
         connection_deadline = t_connection_start + self.connection_timeout_seconds
 
-        all_column_infos: List[ColumnInfo] = []
-
-        databases = self.list_included_databases()
-
-        table_metrics, table_names = self.scan_tables(databases)
-        t_tablescan = time.monotonic()  ## Time it took to scan the table metrics
-        self.console.print(
-            f"Found {len(table_names)} tables in {round(t_tablescan - t_connection_start, 2)} seconds. Enumerating columns..."
-        )
+        all_metric_queries, table_metrics = self.scan_for_queries()
         yield from table_metrics
-
-        all_column_infos = self.list_columns(databases)
-
-        print(f"Generating queries for {len(all_column_infos)} columns...")
-        all_metric_queries: List[MetricQuery] = []
-        for c_info in all_column_infos:
-            all_metric_queries.extend(self._generate_queries(c_info))
 
         def query_priority(mq: MetricQuery) -> int:
             """Return priority order: lower number = higher priority"""
@@ -415,6 +422,14 @@ class SnowflakeConn:
         yield from self._snapshot_threaded(run_deadline)
         print(f"Finished in {round(time.monotonic() - t_conn_start, 2)} seconds")
 
+    def list_only(self, run_deadline: float) -> Iterator[str]:
+        all_metric_queries, table_metrics = self.scan_for_queries()
+        for m in table_metrics:
+            yield f"{m.target_table} : {m.metric_name}"
+        for q in all_metric_queries:
+            for metric_name in q.metrics:
+                yield f"{q.fq_table_name}.{q.column_name} : {metric_name}"
+
     def _simple_queries(
         self,
         column_info: ColumnInfo,
@@ -474,9 +489,13 @@ class SnowflakeConn:
                 }
             )
 
-        return queries
+        return {
+            metric: query
+            for metric, query in queries.items()
+            if self.include_column_metric(column_info.table, column_info.column_name, metric)
+        }
 
-    def _generate_queries(self, column_info: ColumnInfo) -> List[MetricQuery]:
+    def _generate_column_queries(self, column_info: ColumnInfo) -> List[MetricQuery]:
         """
         Generate a list of MetricQuery objects for a given column based on its type.
         This function does not execute queries, only creates the query objects in QUEUED state.
@@ -509,6 +528,7 @@ class SnowflakeConn:
                 timeout_at=0.0,
                 fq_table_name=column_info.table,
                 column_name=column_info.column_name,
+                metrics=list(query_columns.keys()),
                 query_detail="simple_metrics",
                 result_extractor=extract_simple_metrics,
             )
@@ -568,6 +588,7 @@ class SnowflakeConn:
                         timeout_at=0.0,
                         fq_table_name=column_info.table,
                         column_name=column_info.column_name,
+                        metrics=['numeric_percentiles'],
                         query_detail="numeric_percentiles",
                         result_extractor=extract_percentiles,
                     )
@@ -656,6 +677,7 @@ class SnowflakeConn:
                         timeout_at=0.0,
                         fq_table_name=column_info.table,
                         column_name=column_info.column_name,
+                        metrics=["numeric_histogram"],
                         query_detail="numeric_histogram",
                         result_extractor=extract_histogram,
                     )
@@ -775,6 +797,7 @@ class SnowflakeConn:
                         timeout_at=0.0,
                         fq_table_name=column_info.table,
                         column_name=column_info.column_name,
+                        metrics=["datetime_histogram"],
                         query_detail="datetime_histogram",
                         result_extractor=extract_datetime_histogram,
                     )
@@ -834,19 +857,20 @@ class SnowflakeConn:
 
     def database_is_included_at_all(self, database: str) -> bool:
         """ Return True if this database is included in _any_ metrics. """
-        if self.connection_config.include is not None:
-            for inc in self.connection_config.include:
-                if inc.database.lower() == database.lower():
-                    break
-            else:
-                return False
         for exc in self.connection_config.exclude:
-            if exc.schema is None and exc.database.lower() == database.lower():
+            if exc.schema is None and exc.database_lower == database.lower():
                 return False
-        return True
+        if self.connection_config.include is None:
+            return True
+        for inc in self.connection_config.include:
+            if inc.database_lower == database.lower():
+                return True
+        return False
 
     def include_table_at_all(self, table: FqTable) -> bool:
         """ Whether this table or any of its columns are included """
+        if table.schema.lower() == 'information_schema':
+            return False
         # check for excluding specifically this table, schema, or db
         for exc in self.connection_config.exclude:
             if (
@@ -900,6 +924,8 @@ class SnowflakeConn:
 
     def include_table_metrics(self, table: FqTable) -> bool:
         """ Whether this table itself is included """
+        if table.schema.lower() == 'information_schema':
+            return False
         # check for excluding specifically this table
         for exc in self.connection_config.exclude:
             if (
@@ -954,6 +980,8 @@ class SnowflakeConn:
 
     def include_column(self, table: FqTable, column: str) -> bool:
         """ Whether this column is included in metrics """
+        if table.schema.lower() == 'information_schema':
+            return False
         # check for excluding specifically this column
         for exc in self.connection_config.exclude:
             # exclude whole column
@@ -1026,6 +1054,66 @@ class SnowflakeConn:
                 return True
         return False
 
+    def include_column_metric(self, table: FqTable, column: str, metric: str) -> bool:
+        if table.schema.lower() == 'information_schema':
+            return False
+        if not self.include_column(table, column):
+            return False
+
+        for exc in self.connection_config.exclude:
+            # exclude specifically this metric
+            if (
+                exc.database_lower == table.database.lower()
+                and exc.schema_lower == table.schema.lower()
+                and exc.table_lower == table.table.lower()
+                and exc.column_lower == column.lower()
+                and exc.metric_lower == metric.lower()
+            ):
+                return False
+        if self.connection_config.include is None:
+            return True
+        for inc in self.connection_config.include:
+            # match db.schema.table.column:metric
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table_lower == table.table.lower()
+                and inc.column_lower == column.lower()
+                and inc.metric_lower == metric.lower()
+            ):
+                return True
+            # match db.schema.table.column
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table_lower == table.table.lower()
+                and inc.column_lower == column.lower()
+                and inc.metric_lower is None
+            ):
+                return True
+            # match db.schema.table
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table_lower == table.table.lower()
+                and inc.column is None
+            ):
+                return True
+            # match db.schema
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema_lower == table.schema.lower()
+                and inc.table is None
+            ):
+                return True
+            # match db
+            if (
+                inc.database_lower == table.database.lower()
+                and inc.schema is None
+            ):
+                return True
+        return False
+
     def scan_tables(self, databases: List[str]) -> Tuple[List[Metric], List[FqTable]]:
         """
         Collect table-level metrics for all tables in the configured database/schema.
@@ -1041,7 +1129,6 @@ class SnowflakeConn:
                 - List of Metric objects with table-level metrics
                 - List of table names found in the schema
         """
-
         metrics = []
         fq_table_names: List[FqTable] = []
 
@@ -1096,7 +1183,7 @@ class SnowflakeConn:
                             target_table=fq_table_name,
                             target_column=None,
                             metric_name="bytes",
-                            metric_value=row['TABLE_BYTES'],
+                            metric_value=row['BYTES'],
                             measured_at=measured_at,
                         ),
                         Metric(
@@ -1119,17 +1206,18 @@ class SnowflakeConn:
 
         with self.conn.cursor() as cur:
             try:
-                cur.execute(
-                    f"""
-                    select {','.join(
-                        f"TO_TIMESTAMP_TZ(SYSTEM$LAST_CHANGE_COMMIT_TIME('{table_name}') / 1e9)"
-                        for table_name in fq_table_names
-                        if self.include_table_metrics(fq_table_name)
-                    )}
-                """
-                )
-                results = cur.fetchone()
-                assert results
+                tables = [t for t in fq_table_names if self.include_table_metrics(fq_table_name)]
+                if not tables:
+                    results = []
+                else:
+                    cur.execute(f"""
+                        select {','.join(
+                            f"TO_TIMESTAMP_TZ(SYSTEM$LAST_CHANGE_COMMIT_TIME('{table}') / 1e9)"
+                            for table in tables
+                        )}
+                    """)
+                    results = cur.fetchone()
+                    assert results
             except Exception:
                 self.console.print("Error getting table update times")
                 self.console.print(traceback.format_exc())
@@ -1144,7 +1232,7 @@ class SnowflakeConn:
                     metric_value=col,
                     measured_at=measured_at,
                 )
-                for col, table_name in zip(results, fq_table_names)
+                for col, table_name in zip(results, tables)
             ]
 
         return metrics, fq_table_names

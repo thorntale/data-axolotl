@@ -38,16 +38,6 @@ class SnowflakeConnectionConfig(BaseConnectionConfig):
     def validate_authentication(self):
         params = self.params
 
-        # error for invalid params
-        possible_params = {
-            param.name
-            for param
-            in inspect.signature(snowflake.connector.connect).parameters.values()
-        }
-        invalid_options = set(params.keys()) - possible_params
-        if invalid_options:
-            raise ValueError(f'Unrecognized connection params on snowflake connection {self.name}: [{", ".join(invalid_options)}]. Possible connection params are: {", ".join(possible_params)}')
-
         # error for missing required params
         required_options = {'account', 'user'}
         missing_options = required_options - set(params.keys())
@@ -70,6 +60,7 @@ class SnowflakeConnectionConfig(BaseConnectionConfig):
             raise ValueError(
                 "Cannot provide both password and private key authentication."
             )
+        return self
 
 class AxolotlConfig(BaseModel):
     """Top-level configuration for Axolotl."""
@@ -144,7 +135,7 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     # TODO: later, support conn types that aren't snowflake
     connections: Dict[str, BaseConnectionConfig] = {}
 
-    for conn_name, conn_config in config.pop("connections", {}):
+    for conn_name, conn_config in config.pop("connections", {}).items():
         conn_type = conn_config.get("type", "snowflake")
         if conn_type == "snowflake":
             # Check if there's a connection-specific metrics override in metrics.<conn_name>

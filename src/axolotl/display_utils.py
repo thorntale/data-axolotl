@@ -1,5 +1,8 @@
-def pretty_table_name(table: str) -> str:
-    return table.split('.')[-1].title()
+from .state_dao import FqTable
+
+
+def pretty_table_name(table: FqTable) -> str:
+    return table.table.title()
 
 def maybe_float(n: str):
     try:

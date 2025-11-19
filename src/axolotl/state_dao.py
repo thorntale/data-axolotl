@@ -20,24 +20,24 @@ class Run(NamedTuple):
 ident = r'([^":.]+|"(""|[^"])+")'
 metric = r'([^.:]+)'
 fq_table_regex = (
-    rf'|(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})'
+    rf'^(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})$'
 )
-include_derective_regex = (
-    rf'(?P<database>{ident})'
-    rf'|(?P<database>{ident})\.(?P<schema>{ident})'
-    rf'|(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})'
-    rf'|(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident}):(?P<metric>{metric})'
-    rf'|(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})\.(?P<column>{ident})'
-    rf'|(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})\.(?P<column>{ident}):(?P<metric>{metric})'
-)
+include_derective_regexs = [
+    rf'^(?P<database>{ident})$',
+    rf'^(?P<database>{ident})\.(?P<schema>{ident})$',
+    rf'^(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})$',
+    rf'^(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident}):(?P<metric>{metric})$',
+    rf'^(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})\.(?P<column>{ident})$',
+    rf'^(?P<database>{ident})\.(?P<schema>{ident})\.(?P<table>{ident})\.(?P<column>{ident}):(?P<metric>{metric})$',
+]
 
 def parse_ident(sql_ident: str) -> str:
-    if ident[0] == '"' and ident[-1] == '"':
-        return ident[1:-1].replace('""', '"')
+    if sql_ident[0] == '"' and sql_ident[-1] == '"':
+        return sql_ident[1:-1].replace('""', '"')
     elif '"' in sql_ident:
         raise TypeError(f'Unparsable sql identifier {sql_ident!r}')
     else:
-        return ident
+        return sql_ident
 def parse_maybe_ident(sql_ident: str | None) -> str | None:
     if sql_ident is None:
         return None
@@ -80,16 +80,18 @@ class IncludeDerictive(NamedTuple):
 
     @staticmethod
     def from_string(v: str) -> IncludeDerictive:
-        m = re.match(r'^([^".]+|"(?:""|[^"])+")\.([^".]+|"(?:""|[^"])+")\.([^".]+|"(?:""|[^"])+")$', v)
-        if not m:
-            raise ValueError(f'Cannot parse fully qualified table name from {v}')
-        return IncludeDerictive(
-            parse_ident(m.group('database')),
-            parse_maybe_ident(m.group('schema')),
-            parse_maybe_ident(m.group('table')),
-            parse_maybe_ident(m.group('column')),
-            parse_maybe_ident(m.group('metric')),
-        )
+        for regex in include_derective_regexs:
+            m = re.match(regex, v)
+            if m:
+                groups = m.groupdict()
+                return IncludeDerictive(
+                    parse_ident(groups['database']),
+                    parse_maybe_ident(groups.get('schema')),
+                    parse_maybe_ident(groups.get('table')),
+                    parse_maybe_ident(groups.get('column')),
+                    parse_maybe_ident(groups.get('metric')),
+                )
+        raise ValueError(f'Cannot parse include/exclude directive from {v}')
 
     @property
     def database_lower(self):
@@ -269,7 +271,7 @@ class StateDAO:
             """,
             [
                 metric.run_id,
-                metric.target_table,
+                str(metric.target_table),
                 metric.target_column,
                 metric.metric_name,
                 serialized_value,
