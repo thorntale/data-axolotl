@@ -6,7 +6,6 @@ import pdb
 
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed, Future
-from enum import Enum
 from typing import (
     NamedTuple,
     List,
@@ -33,12 +32,12 @@ from .snowflake_utils import (
     extract_histogram,
     extract_percentiles,
     extract_simple_metrics,
-    get_simple_data_type
+    extract_datetime_histogram,
+    get_simple_data_type,
+    query_priority,
 )
 
 from .database_types import SimpleDataType, ColumnInfo
-
-
 
 
 class SnowflakeConn:
@@ -87,7 +86,6 @@ class SnowflakeConn:
             else config.exclude_complex_queries
         )
 
-        # self.databases = self.connection_options.databases
         self.run_id = run_id
 
     def __enter__(self):
@@ -116,13 +114,36 @@ class SnowflakeConn:
             console.print(traceback.format_exc())
             raise
 
-    def scan_for_queries(self) -> Tuple[List[MetricQuery], List[Metric]]:
+    def snapshot(self, run_deadline: float) -> Iterator[Metric]:
+        """
+        Capture metrics for all tables in the configured schemas, both
+        table-level and column-level for all tables
+
+        Args:
+            run_deadline: Time at which this entire run should be canceled
+
+        Returns:
+            List of Metric objects containing all collected metrics
+        """
+        t_conn_start = time.monotonic()
+        yield from self._snapshot_threaded(run_deadline)
+        print(f"Finished in {round(time.monotonic() - t_conn_start, 2)} seconds")
+
+    def list_only(self, run_deadline: float) -> Iterator[str]:
+        all_metric_queries, table_metrics = self._scan_for_queries()
+        for m in table_metrics:
+            yield f"{m.target_table} : {m.metric_name}"
+        for q in all_metric_queries:
+            for metric_name in q.metrics:
+                yield f"{q.fq_table_name}.{q.column_name} : {metric_name}"
+
+    def _scan_for_queries(self) -> Tuple[List[MetricQuery], List[Metric]]:
         # scan the db and generate metric queries & table metrics
         t_start = time.monotonic()
 
-        databases = self.list_included_databases()
+        databases = self._list_included_databases()
 
-        table_metrics, table_names = self.scan_tables(databases)
+        table_metrics, table_names = self._scan_tables(databases)
         t_tablescan = time.monotonic()  ## Time it took to scan the table metrics
         self.console.print(
             f"Found {len(table_names)} tables in {round(t_tablescan - t_start, 2)} seconds. Enumerating columns..."
@@ -137,7 +158,7 @@ class SnowflakeConn:
 
         return all_metric_queries, table_metrics
 
-    def run_metric_query(
+    def _start_metric_query(
         self, metric_query: MetricQuery, per_query_timeout: float
     ) -> MetricQuery:
         """
@@ -155,16 +176,12 @@ class SnowflakeConn:
             with self.conn.cursor(DictCursor) as cur:
                 cur.execute_async(metric_query.query)
                 assert cur.sfqid is not None
-                # Return updated MetricQuery with the query_id, timeout_at, and STARTED status
                 return metric_query._replace(
                     query_id=cur.sfqid,
                     timeout_at=time.monotonic() + per_query_timeout,
                     status=QueryStatus.STARTED,
                 )
         except Exception:
-            # self.console.print(f"Error executing query: {metric_query.query}")
-            # self.console.print(traceback.format_exc())
-            # Return updated MetricQuery with ERROR status
             return metric_query._replace(status=QueryStatus.ERROR)
 
     def _cancel_queries(self, query_ids: List[str]):
@@ -180,18 +197,13 @@ class SnowflakeConn:
         self,
         run_deadline: float,
     ) -> Iterator[Metric]:
+        if is_timed_out([run_deadline]):
+            raise TimeoutError("run already timed out")
+
         t_connection_start = time.monotonic()
         connection_deadline = t_connection_start + self.connection_timeout_seconds
-
-        all_metric_queries, table_metrics = self.scan_for_queries()
+        all_metric_queries, table_metrics = self._scan_for_queries()
         yield from table_metrics
-
-        def query_priority(mq: MetricQuery) -> int:
-            """Return priority order: lower number = higher priority"""
-            if "histogram" in mq.query_detail or "percentile" in mq.query_detail:
-                return 0  # High priority
-            else:
-                return 1  # Normal priority (simple metrics)
 
         all_metric_queries.sort(key=query_priority)
 
@@ -203,7 +215,7 @@ class SnowflakeConn:
         # FIXME: this is immoral and depraved. We should be locking this.
         running_queries: Dict[str, MetricQuery] = {}
 
-        def update():
+        def _update():
             if isinstance(self.console, LiveConsole):
                 self.console.update(
                     num_successful,
@@ -212,29 +224,36 @@ class SnowflakeConn:
                     list(running_queries.values()),
                 )
 
-        def run_and_wait(metric_query: MetricQuery) -> List[Metric]:
-            rq = self.run_metric_query(metric_query, self.query_timeout_seconds)
-            qid = rq.query_id
+        def _run_and_wait(metric_query: MetricQuery, index: int) -> List[Metric]:
+            metric_query = self._start_metric_query(
+                metric_query, self.query_timeout_seconds
+            )
+            qid = metric_query.query_id
             assert qid
 
-            if rq.status != QueryStatus.STARTED:
+            all_metric_queries[index] = metric_query
+
+            if metric_query.status != QueryStatus.STARTED:
                 # Query failed to start
                 self.console.print(
-                    f"Failed to start: {rq.fq_table_name}.{rq.column_name} [{rq.query_detail}]"
+                    f"Failed to start: {metric_query.fq_table_name}.{metric_query.column_name} [{metric_query.query_detail}]"
                 )
                 raise Exception("Failed to start query")
-            running_queries[qid] = rq
 
-            while self.conn.is_still_running(self.conn.get_query_status(rq.query_id)):
+            running_queries[qid] = metric_query
+            while self.conn.is_still_running(
+                self.conn.get_query_status(metric_query.query_id)
+            ):
                 time.sleep(0.1)
-                if is_timed_out([rq.timeout_at, connection_deadline]):
+                if is_timed_out([metric_query.timeout_at, connection_deadline, run_deadline]):
                     del running_queries[qid]
-                    self._cancel_queries([rq.query_id])
+                    self._cancel_queries([metric_query.query_id])
+                    all_metric_queries[index] = all_metric_queries[index]._replace(status=QueryStatus.ERROR)
                     self.console.print(
-                        f"Timed out: ({qid}): {rq.fq_table_name}.{rq.column_name} ({rq.query_detail}) at {rq.timeout_at} (current time {time.monotonic()})"
+                        f"Timed out: ({qid}): {metric_query.fq_table_name}.{metric_query.column_name} ({metric_query.query_detail}) at {metric_query.timeout_at} (current time {time.monotonic()})"
                     )
                     raise TimeoutError(
-                        f"Timed out: {rq.fq_table_name}.{rq.column_name} ({rq.query_detail})"
+                        f"Timed out: {metric_query.fq_table_name}.{metric_query.column_name} ({metric_query.query_detail})"
                     )
             del running_queries[qid]
 
@@ -244,45 +263,55 @@ class SnowflakeConn:
                     results = cur.fetchone()
                     assert results
 
-                    extracted_metrics = rq.result_extractor(
+                    extracted_metrics = metric_query.result_extractor(
                         self.run_id,
-                        rq.fq_table_name,
-                        rq.column_name,
+                        metric_query.fq_table_name,
+                        metric_query.column_name,
                         results,
                     )
+
+                    all_metric_queries[index] = all_metric_queries[index]._replace(status=QueryStatus.DONE)
                     return extracted_metrics
             except Exception as e:
+                all_metric_queries[index] = all_metric_queries[index]._replace(status=QueryStatus.ERROR)
                 self.console.print(
-                    f"Error processing results for ({qid}): {rq.fq_table_name}.{rq.column_name} ({rq.query_detail})"
+                    f"Error processing results for ({qid}): {metric_query.fq_table_name}.{metric_query.column_name} ({metric_query.query_detail})"
                 )
                 raise e
 
         # subtract the time we took to query the table stats and do setup, and
         # that's what we'll give the executor to run the column queries.
         executor = ThreadPoolExecutor(max_workers=self.max_threads)
-        future_to_mq = {
-            executor.submit(run_and_wait, mq): mq for mq in all_metric_queries
-        }
+        # future_to_mq = {
+        #    executor.submit(_run_and_wait, mq): mq for mq in all_metric_queries
+        # }
+
+        futures = [
+            executor.submit(_run_and_wait, mq, i)
+            for i, mq in enumerate(all_metric_queries)
+        ]
 
         all_queries_timeout = self.connection_timeout_seconds - (
             time.monotonic() - t_connection_start
         )
-        for future in as_completed(future_to_mq, timeout=all_queries_timeout):
-            # self.console.print("as_completed triggered")
-            mq = future_to_mq[future]
+        run_timeout = run_deadline - time.monotonic()
+
+        for future in as_completed(futures, timeout=min(run_timeout, all_queries_timeout)):
+            # mq = future_to_mq[future]
+
             try:
                 result = future.result()
-                # self.console.print("done")
-                mq._replace(status=QueryStatus.DONE)
+                # mq._replace(status=QueryStatus.DONE)
                 num_successful += 1
             except Exception as exc:
-                mq._replace(status=QueryStatus.ERROR)
+                # mq._replace(status=QueryStatus.ERROR)
                 num_failed += 1
-                update()
+                _update()
 
             else:
-                update()
+                _update()
                 yield from result
+        self.console.print(all_metric_queries[0].status)
 
         # By this time, we've for db_timeout amount of time; shut down the executor
         executor.shutdown(wait=False, cancel_futures=True)
@@ -291,29 +320,6 @@ class SnowflakeConn:
             self.console.print(f"canceling {len(running_queries)} queries")
             self._cancel_queries([rq.query_id for rq in running_queries.values()])
         return
-
-    def snapshot(self, run_deadline: float) -> Iterator[Metric]:
-        """
-        Capture metrics for all tables in the configured databases/schemas, both
-        table-level and column-level for all tables
-
-        Args:
-            run_deadline: Time at which this entire run should be canceled
-
-        Returns:
-            List of Metric objects containing all collected metrics
-        """
-        t_conn_start = time.monotonic()
-        yield from self._snapshot_threaded(run_deadline)
-        print(f"Finished in {round(time.monotonic() - t_conn_start, 2)} seconds")
-
-    def list_only(self, run_deadline: float) -> Iterator[str]:
-        all_metric_queries, table_metrics = self.scan_for_queries()
-        for m in table_metrics:
-            yield f"{m.target_table} : {m.metric_name}"
-        for q in all_metric_queries:
-            for metric_name in q.metrics:
-                yield f"{q.fq_table_name}.{q.column_name} : {metric_name}"
 
     def _simple_queries(
         self,
@@ -629,20 +635,6 @@ class SnowflakeConn:
                 """
 
                 # Custom extractor for datetime histogram
-                def extract_datetime_histogram(
-                    run_id: int, fq_table: FqTable, col: str, results: Dict[str, Any]
-                ) -> List[Metric]:
-                    return [
-                        Metric(
-                            run_id=run_id,
-                            target_table=fq_table,
-                            target_column=col,
-                            metric_name="datetime_histogram",
-                            metric_value=json.loads(results["DATETIME_HISTOGRAM"]),
-                            measured_at=results["_measured_at"],
-                        )
-                    ]
-
                 queries.append(
                     MetricQuery(
                         query=histogram_query,
@@ -707,7 +699,7 @@ class SnowflakeConn:
 
         return column_info_arr
 
-    def list_included_databases(self) -> List[str]:
+    def _list_included_databases(self) -> List[str]:
         with self.conn.cursor(DictCursor) as cur:
             cur.execute("show databases")
             all_databases = [row["name"] for row in cur.fetchall()]
@@ -718,7 +710,7 @@ class SnowflakeConn:
             if self.connection_config.database_is_included_at_all(database)
         ]
 
-    def scan_tables(self, databases: List[str]) -> Tuple[List[Metric], List[FqTable]]:
+    def _scan_tables(self, databases: List[str]) -> Tuple[List[Metric], List[FqTable]]:
         """
         Collect table-level metrics for all tables in the configured database/schema.
 

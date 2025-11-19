@@ -1,15 +1,7 @@
 from .state_dao import Metric, FqTable
+from enum import Enum
 from typing import (
     NamedTuple,
-    List,
-    Tuple,
-    TypedDict,
-    NotRequired,
-    Dict,
-    Any,
-    Set,
-    Callable,
-    Optional,
 )
 
 

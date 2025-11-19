@@ -13,6 +13,7 @@ from typing import (
 )
 from .state_dao import Metric, FqTable
 from .database_types import SimpleDataType, ColumnInfo
+from .metric_query import QueryStatus, MetricQuery
 
 
 SNOWFLAKE_NUMERIC_TYPES = [
@@ -155,3 +156,26 @@ def extract_histogram(
             measured_at=results["_MEASURED_AT"],
         )
     ]
+
+
+def extract_datetime_histogram(
+    run_id: int, fq_table: FqTable, col: str, results: Dict[str, Any]
+) -> List[Metric]:
+    return [
+        Metric(
+            run_id=run_id,
+            target_table=fq_table,
+            target_column=col,
+            metric_name="datetime_histogram",
+            metric_value=json.loads(results["DATETIME_HISTOGRAM"]),
+            measured_at=results["_measured_at"],
+        )
+    ]
+
+
+def query_priority(mq: MetricQuery) -> int:
+    """Return priority order: lower number = higher priority"""
+    if "histogram" in mq.query_detail or "percentile" in mq.query_detail:
+        return 0  # High priority
+    else:
+        return 1  # Normal priority (simple metrics)
