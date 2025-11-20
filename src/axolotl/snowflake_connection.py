@@ -69,10 +69,17 @@ class SnowflakeConn:
 
         self.max_threads = connection_config.max_threads or config.max_threads
         self.run_timeout_seconds = config.run_timeout_seconds
-        self.connection_timeout_seconds = (
-            connection_config.connection_timeout_seconds
-            or config.connection_timeout_seconds
+
+        self.conn_timeout = Timeout(
+            timeout_seconds=connection_config.connection_timeout_seconds
+            or config.connection_timeout_seconds,
+            detail=f"connection={connection_config.name}",
         )
+
+        #self.connection_timeout_seconds = (
+        #    connection_config.connection_timeout_seconds
+        #    or config.connection_timeout_seconds
+        #)
         self.query_timeout_seconds = (
             connection_config.query_timeout_seconds or config.query_timeout_seconds
         )
@@ -126,9 +133,13 @@ class SnowflakeConn:
         Returns:
             List of Metric objects containing all collected metrics
         """
-        t_conn_start = time.monotonic()
+        #t_conn_start = time.monotonic()
+        #conn_timeout = Timeout(s)
+        self.conn_timeout.start()
         yield from self._snapshot_threaded(run_timeout)
-        print(f"Finished in {round(time.monotonic() - t_conn_start, 2)} seconds")
+        duration = self.conn_timeout.stop()
+
+        print(f"Finished in {round(duration, 2)} seconds")
 
     def list_only(self, run_timeout: Timeout) -> Iterator[str]:
         all_metric_queries, table_metrics = self._scan_for_queries()
@@ -201,8 +212,6 @@ class SnowflakeConn:
         if run_timeout.is_timed_out():
             raise TimeoutError("run already timed out")
 
-        t_connection_start = time.monotonic()
-        connection_deadline = t_connection_start + self.connection_timeout_seconds
         all_metric_queries, table_metrics = self._scan_for_queries()
         yield from table_metrics
 
@@ -246,10 +255,14 @@ class SnowflakeConn:
                 self.conn.get_query_status(metric_query.query_id)
             ):
                 time.sleep(0.1)
-                if is_timed_out([metric_query.timeout_at, connection_deadline, run_timeout.deadline]):
+                if is_timed_out(
+                    [metric_query.timeout_at, self.conn_timeout.deadline, run_timeout.deadline]
+                ):
                     del running_queries[qid]
                     self._cancel_queries([metric_query.query_id])
-                    all_metric_queries[index] = all_metric_queries[index]._replace(status=QueryStatus.ERROR)
+                    all_metric_queries[index] = all_metric_queries[index]._replace(
+                        status=QueryStatus.ERROR
+                    )
                     self.console.print(
                         f"Timed out: ({qid}): {metric_query.fq_table_name}.{metric_query.column_name} ({metric_query.query_detail}) at {metric_query.timeout_at} (current time {time.monotonic()})"
                     )
@@ -271,10 +284,14 @@ class SnowflakeConn:
                         results,
                     )
 
-                    all_metric_queries[index] = all_metric_queries[index]._replace(status=QueryStatus.DONE)
+                    all_metric_queries[index] = all_metric_queries[index]._replace(
+                        status=QueryStatus.DONE
+                    )
                     return extracted_metrics
             except Exception as e:
-                all_metric_queries[index] = all_metric_queries[index]._replace(status=QueryStatus.ERROR)
+                all_metric_queries[index] = all_metric_queries[index]._replace(
+                    status=QueryStatus.ERROR
+                )
                 self.console.print(
                     f"Error processing results for ({qid}): {metric_query.fq_table_name}.{metric_query.column_name} ({metric_query.query_detail})"
                 )
@@ -292,13 +309,15 @@ class SnowflakeConn:
             for i, mq in enumerate(all_metric_queries)
         ]
 
-        all_queries_timeout = self.connection_timeout_seconds - (
-            time.monotonic() - t_connection_start
-        )
-        #run_timeout = run_deadline - time.monotonic()
+        #all_queries_timeout = self.connection_timeout_seconds - (
+        #    time.monotonic() - t_connection_start
+        #)
+        # run_timeout = run_deadline - time.monotonic()
         print(f"Time remaining: {round(run_timeout.time_remaining, 2)} seconds")
 
-        for future in as_completed(futures, timeout=min(run_timeout.time_remaining, all_queries_timeout)):
+        for future in as_completed(
+            futures, timeout=min(run_timeout.time_remaining, self.conn_timeout.deadline)
+        ):
             # mq = future_to_mq[future]
 
             try:
@@ -313,7 +332,6 @@ class SnowflakeConn:
             else:
                 _update()
                 yield from result
-        self.console.print(all_metric_queries[0].status)
 
         # By this time, we've for db_timeout amount of time; shut down the executor
         executor.shutdown(wait=False, cancel_futures=True)
