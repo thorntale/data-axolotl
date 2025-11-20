@@ -112,7 +112,7 @@ class SnowflakeConn:
             console.print(
                 f"Failed to create snowflake connection: {conn_params.get('connection_name')}"
             )
-            console.print(traceback.format_exc())
+            traceback.format_exc()
             raise
 
     def snapshot(self, run_timeout: Timeout) -> Iterator[Metric]:
@@ -121,18 +121,16 @@ class SnowflakeConn:
         table-level and column-level for all tables
 
         Args:
-            run_deadline: Time at which this entire run should be canceled
+            run_timeout: Timeout object for the overall run
 
         Returns:
             List of Metric objects containing all collected metrics
         """
-        # t_conn_start = time.monotonic()
-        # conn_timeout = Timeout(s)
         self.conn_timeout.start()
         yield from self._snapshot_threaded(run_timeout)
         duration = self.conn_timeout.stop()
 
-        print(f"Finished in {round(duration, 2)} seconds")
+        self.console.print(f"Finished ({self.connection_config.name}) in {round(duration, 2)} seconds")
 
     def list_only(self, run_timeout: Timeout) -> Iterator[str]:
         all_metric_queries, table_metrics = self._scan_for_queries()
@@ -170,7 +168,7 @@ class SnowflakeConn:
                     cur.execute(f"SELECT SYSTEM$CANCEL_QUERY('{query_id}')")
                 except Exception:
                     self.console.print(f"Error canceling query: {query_id}")
-                    self.console.print(traceback.format_exc())
+                    traceback.format_exc()
 
     def _snapshot_threaded(
         self,
@@ -297,7 +295,7 @@ class SnowflakeConn:
         executor.shutdown(wait=False, cancel_futures=True)
 
         if len(running_queries) > 0:
-            self.console.print(f"canceling {len(running_queries)} queries")
+            self.console.print(f"Canceling {len(running_queries)} lagging queries")
             self._cancel_queries([rq.query_id for rq in running_queries.values()])
         return
 
@@ -728,7 +726,7 @@ class SnowflakeConn:
 
                 except Exception:
                     self.console.print("Error running table scan query")
-                    self.console.print(traceback.format_exc())
+                    traceback.format_exc()
                     raise
 
                 for row in cur:
@@ -804,7 +802,7 @@ class SnowflakeConn:
                     assert results
             except Exception:
                 self.console.print("Error getting table update times")
-                self.console.print(traceback.format_exc())
+                #self.console.print(traceback.format_exc())
                 raise
 
             metrics += [
