@@ -1,8 +1,10 @@
+from __future__ import annotations
 from rich.console import Console
 from typing import List
 from typing import Any
 from typing import Optional
 from typing import NamedTuple
+from typing import Self
 from datetime import datetime, date
 from datetime import timezone
 from contextlib import contextmanager

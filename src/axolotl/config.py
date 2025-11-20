@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional, List
 import inspect
 
-import snowflake.connector
 from pydantic import BaseModel, model_validator
 from .state_dao import IncludeDerictive, FqTable
 
