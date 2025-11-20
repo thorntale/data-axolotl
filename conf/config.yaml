@@ -1,11 +1,11 @@
 max_threads: 10
 
-run_timeout_seconds: 1200
+run_timeout_seconds: 600
 connection_timeout_seconds: 600
 query_timeout_seconds: 60
 
-exclude_expensive_queries: true
-exclude_complex_queries: true
+exclude_expensive_queries: false
+exclude_complex_queries: false
 
 connections:
   default:
