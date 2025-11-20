@@ -18,7 +18,9 @@ from .alert_report import AlertReport
 from .config import load_config, SnowflakeConnectionConfig
 from .live_run_console import live_run_console
 from .generate_config_interactive import generate_config_interactive
+from .timeouts import Timeout
 import traceback
+
 
 app = typer.Typer()
 
@@ -69,21 +71,23 @@ def run(
     state = StateDAO(state_conn)
 
     config = load_config(config_path)
-    t_run_start = time.monotonic()
-    run_timeout_at = t_run_start + config.run_timeout_seconds
+    #t_run_start = time.monotonic()
+    #run_timeout_at = t_run_start + config.run_timeout_seconds
 
     with live_run_console() as console:
         with state.make_run() as run_id:
+            run_timeout = Timeout(timeout_seconds=config.run_timeout_seconds, detail=f"Run id: {run_id}")
+            run_timeout.start()
             console.print(f"Starting run #{run_id}...")
 
             for conn_config in config.connections.values():
                 if isinstance(conn_config, SnowflakeConnectionConfig):
                     with SnowflakeConn(config, conn_config, run_id, console) as snowflake_conn:
                         if list_only:
-                            for m in snowflake_conn.list_only(run_timeout_at):
+                            for m in snowflake_conn.list_only(run_timeout):
                                 console.print(m)
                         else:
-                            for m in snowflake_conn.snapshot(run_timeout_at):
+                            for m in snowflake_conn.snapshot(run_timeout):
                                 try:
                                     state.record_metric(m)
                                 except Exception as e:

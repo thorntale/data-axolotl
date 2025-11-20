@@ -1,6 +1,6 @@
 max_threads: 10
 
-run_timeout_seconds: 10
+run_timeout_seconds: 1200
 connection_timeout_seconds: 600
 query_timeout_seconds: 60
 
