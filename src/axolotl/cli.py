@@ -76,7 +76,7 @@ def run(
 
     with live_run_console() as console:
         with state.make_run() as run_id:
-            run_timeout = Timeout(timeout_seconds=config.run_timeout_seconds, detail=f"Run id: {run_id}")
+            run_timeout = Timeout(timeout_seconds=config.run_timeout_seconds, detail=f"run_id: {run_id}")
             run_timeout.start()
             console.print(f"Starting run #{run_id}...")
 

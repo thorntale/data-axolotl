@@ -23,7 +23,7 @@ class Timeout:
     def __repr__(self) -> str:
         started = hasattr(self, "started_at")
         if started:
-            return f"Timeout(timeout_seconds={self.timeout_seconds}, detail={self.detail!r}, started_at={self.started_at}), time_remaining={self.time_remaining}"
+            return f"Timeout(timeout_seconds={self.timeout_seconds}, detail={self.detail!r}, started_at={self.started_at}, time_remaining={self.time_remaining})"
         return (
             f"Timeout(timeout_seconds={self.timeout_seconds}, detail={self.detail!r})"
         )
