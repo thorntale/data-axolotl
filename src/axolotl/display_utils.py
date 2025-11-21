@@ -1,4 +1,4 @@
-from .connectors.state_dao import FqTable
+from .connectors.identifiers import FqTable
 
 
 def pretty_table_name(table: FqTable) -> str:

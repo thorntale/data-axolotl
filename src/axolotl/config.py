@@ -12,15 +12,15 @@ from typing import Any, Dict, Optional, List
 import inspect
 
 from pydantic import BaseModel, model_validator
-from .connectors.state_dao import IncludeDerictive, FqTable
+from .connectors.identifiers import IncludeDirective, FqTable
 
 
 class BaseConnectionConfig(BaseModel):
     name: str
     type: str
     params: Dict[str, Any]
-    include: Optional[List[IncludeDerictive]] = None
-    exclude: List[IncludeDerictive] = []
+    include: Optional[List[IncludeDirective]] = None
+    exclude: List[IncludeDirective] = []
 
     max_threads: Optional[int] = None
     run_timeout_seconds: Optional[int] = None
@@ -415,14 +415,14 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
         **config,
     )
 
-def parse_include_list(items: List[str] | None) -> List[IncludeDerictive] | None:
+def parse_include_list(items: List[str] | None) -> List[IncludeDirective] | None:
     if items is None:
         return None
     for item in items:
         if not isinstance(item, str):
             raise ValueError(f"Include and Exclude rules must be strings. Found {item!r}")
     return [
-        IncludeDerictive.from_string(item)
+        IncludeDirective.from_string(item)
         for item in items
     ]
 

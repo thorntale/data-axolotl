@@ -24,7 +24,8 @@ from snowflake.connector import DictCursor
 from rich.console import Console
 
 from ..config import AxolotlConfig, SnowflakeConnectionConfig
-from ..connectors.state_dao import Metric, FqTable
+from ..connectors.state_dao import Metric
+from .identifiers import FqTable
 from ..live_run_console import LiveConsole
 from ..metric_query import QueryStatus, MetricQuery
 from ..utils import is_timed_out

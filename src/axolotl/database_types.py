@@ -1,4 +1,5 @@
-from .connectors.state_dao import Metric, FqTable
+from .connectors.state_dao import Metric
+from .connectors.identifiers import FqTable
 from enum import Enum
 from typing import (
     NamedTuple,

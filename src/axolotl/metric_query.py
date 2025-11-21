@@ -1,7 +1,8 @@
 from typing import Callable, Dict, List, NamedTuple, Any
 from enum import Enum
 
-from .connectors.state_dao import Metric, FqTable
+from .connectors.state_dao import Metric
+from .connectors.identifiers import FqTable
 
 
 class QueryStatus(Enum):

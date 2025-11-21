@@ -16,7 +16,7 @@ from .display_utils import maybe_float
 from .trackers import MetricTracker
 from .trackers import ChartMode
 from .line_chart import Chart
-from .connectors.state_dao import FqTable
+from .connectors.identifiers import FqTable
 
 from typing import Dict, Optional,Any
 

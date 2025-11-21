@@ -14,7 +14,8 @@ import humanize
 
 from .connectors.snowflake_connection import SimpleDataType
 from .display_utils import maybe_float
-from .connectors.state_dao import Metric, FqTable
+from .connectors.state_dao import Metric
+from .connectors.identifiers import FqTable
 from .line_chart import arr_to_dots
 
 

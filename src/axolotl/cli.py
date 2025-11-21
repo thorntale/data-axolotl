@@ -15,7 +15,8 @@ from .connectors.state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
 from .alert_report import AlertReport
-from .config import load_config, SnowflakeConnectionConfig, IncludeDerictive
+from .config import load_config, SnowflakeConnectionConfig
+from .connectors.identifiers import IncludeDirective
 from .live_run_console import live_run_console
 from .generate_config_interactive import generate_config_interactive
 from .timeouts import Timeout
@@ -172,7 +173,7 @@ all_alerts_arg = typer.Option(
 )
 
 def _get_metric_set(
-    includes: List[IncludeDerictive] = [],
+    includes: List[IncludeDirective] = [],
     run_id: Optional[int] = None,
 ):
     state_conn = get_conn()
@@ -217,7 +218,7 @@ def report(
     """
     Do only the report generation step of run.
     """
-    parsed_targets = [IncludeDerictive.from_string(t) for t in target]
+    parsed_targets = [IncludeDirective.from_string(t) for t in target]
     metric_set = _get_metric_set(parsed_targets, run_id)
     level = (
         { AlertSeverity.Major, AlertSeverity.Minor, AlertSeverity.Changed, AlertSeverity.Unchanged }
@@ -238,7 +239,7 @@ def alerts(
     all_alerts: Annotated[Optional[bool], all_alerts_arg] = False,
 ):
     """ Show alerts """
-    parsed_targets = [IncludeDerictive.from_string(t) for t in target]
+    parsed_targets = [IncludeDirective.from_string(t) for t in target]
     metric_set = _get_metric_set(parsed_targets, run_id)
     level = (
         { AlertSeverity.Major, AlertSeverity.Minor, AlertSeverity.Changed, AlertSeverity.Unchanged }
@@ -256,7 +257,7 @@ def history(
     save: Annotated[Optional[Path], save_arg] = None,
 ):
     """ Show data history """
-    parsed_targets = [IncludeDerictive.from_string(t) for t in target]
+    parsed_targets = [IncludeDirective.from_string(t) for t in target]
     metric_set = _get_metric_set(parsed_targets, run_id)
     HistoryReport(metric_set).print(save)
 
