@@ -7,7 +7,7 @@ Axolotl is a data monitoring tool for catching unexpected breaking changes in an
 
 Axolotl has a simple api, and works with Airflow or cron. Run Axolotl daily and get a summary of changes sent straight to Slack.
 
-What kind of issues does Axolotl monitor for?
+### What kind of issues does Axolotl monitor for?
 - **Uniqueness**  A column used to be filled with unique values and now contains duplicates? You might want to know.
 - **Distinct Count**  A three-valued enum now has four values? Let's check that.
 - **Numeric Range**  The maximum date went from today to 2399-03-14? Oh no.
@@ -15,12 +15,12 @@ What kind of issues does Axolotl monitor for?
 - **Table Size**  Your 100 byte table is not 100 megabytes? Alert!
 - ...and [much more](#list-of-metrics).
 
-What is Axolotl not?
+### What is Axolotl not?
 - **Not** a test suite
 - **Not** for monitoring business metrics, like Signup Rates or CAC.
 - **Not** a statistical analysis tool
 
-Why Axolotl?
+### Why Axolotl?
 - **Monitor Everything Automatically**  Writing tests is great (keep it up!) but you can only test what you think to test for.
 - **Track Historical State**  If you just noticed a table growing unexpectedly, but don't know when it started, a simple `axolotl report [table]` can show you historical trends and help you pinpoint issues.
 - **Simple Setup**  Don't waste time configuring metrics. You can run your first monitoring job locally in minutes, and setting up a full production schedule doesn't take much longer.
@@ -35,21 +35,40 @@ The simplest way to try out Axolotl is from your local computer via the cli comm
 
 
 ## Locally
-First, install axolotl via pip. (You can also install Axolotl inside a [virtual environment](https://docs.python.org/3/tutorial/venv.html))
+1. First, install axolotl via pip. (You can also install Axolotl inside a [virtual environment](https://docs.python.org/3/tutorial/venv.html))
 
 ```sh
 pip install axolotl
 ```
 
-Verify it was installed successfully by running
+2. Verify it was installed successfully by running
 ```sh
 axolotl --version
 ```
 
-By default, axolotl stores its state in a local SQLite database, `./local.db`. State is used to generate alerts by tracking changes between runs. You can override where state is stored via the [config](#configuration).
+3. Create your configuration by following the [Configuration section](#configuration) below, or alternatively, run `axolotl run` to let the interactive setup helper walk you through setup.
 
-A common pattern is to store state alongside the data you're monitoring, in a dedicated `axolotl` table. An example of this is shown in the [configuration section](#configuration). **TODO: write the example**
+4. Run your monitoring job
+```sh
+axolotl run
+```
 
+5. Wait a bit for data to change, then run again.
+```sh
+axolotl run
+```
+
+6. View your first report
+```sh
+# you can view only alerts using
+axolotl alerts
+# include --all to show all levels of alerts, including unchanged metrics.
+axolotl alerts --all
+# to view historical data, run
+axolotl history
+# you can also filter for a specific table
+axolotl history database.schema.table
+```
 
 ## Via API
 **TODO**
@@ -76,19 +95,22 @@ max_threads: 10
 
 # The timeout of the entire run. Default 600 (10 minutes).
 run_timeout_seconds: 600
+
 # The default timeout per connection. Can be overridden in any individual connection. Default 600 (10 minutes).
 connection_timeout_seconds: 600
+
 # The default timeout per query. Can be overridden at the connection level. Default 60.
 query_timeout_seconds: 60
 
 # expensive queries are `string_avg_length` and `distinct_count`
 exclude_expensive_queries: false
+
 # complex queries are `numeric_percentiles` and `numeric_histogram` and `datetime_histogram`
 exclude_complex_queries: false
 
 # Connections point to the dbs you want to monitor
 connections:
-  # each connection is assigned a name; this can be any string you want.
+  # connection name; this can be any string you want.
   my_analytics_db:
     # currently must be snowflake
     type: snowflake
@@ -114,6 +136,23 @@ connections:
       - template_data
     exclude:
       - template_data.public
+
+    # You can also include any of the top level config options to override them
+    # per connection.
+
+    # connection_timeout_seconds: 600
+    # query_timeout_seconds: 60
+    # exclude_expensive_queries: false
+    # exclude_complex_queries: false
+
+# How state is stored. Default is to store state via sqlite at `./local.db`.
+# See State Storage below for details.
+# To provide a local file:
+# state: local.db
+# To point to a table in a connected database:
+state:
+  connection: my_analytics_db
+  schema: analytics.axolotl  # axolotl will create it's state tables here
 ```
 
 **TODO: add state db options**
@@ -126,11 +165,12 @@ For Snowflake, all possible options are listed in [the developer guide](https://
 
 Regardless of connection method, you probably want these params:
 ```yaml
-# Snowflake Account Identifier.
-# See https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-api#label-account-format-info
+# Snowflake Account Identifier. See https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-api#label-account-format-info
 account: <your account>
+
 # User
 user: <your user>
+
 # Warehouse. Optional if your user has a default warehouse assigned in Snowflake
 warehouse: <your warehouse>
 ```
@@ -140,13 +180,34 @@ Depending on your authentication method, add one of the below sets of parameters
 For private key authentication:
 ```yaml
 private_key_file: "~/.ssh/rsa_key_snowflake.p8"
-private_key_file_pwd: "<private key passphrase>"  # optional, used if your private key is encrypted
+private_key_file_pwd: "<private key passphrase>"  # optional
 ```
 
 For password authentication:
 ```yaml
 password: "<your password>"
 ```
+
+## State Storage
+By default, axolotl stores its state in a local SQLite database, `./local.db`. State is used to generate alerts by tracking changes between runs. You can override where state is stored via the [config](#configuration).
+
+A common pattern is to store state alongside the data you're monitoring, in a dedicated `axolotl` table. An example of this is shown in the [configuration section](#configuration).
+
+If you want to store state in a connection you don't monitor, for instance to use a different database type or connection params, see the example below.
+
+```yaml
+connections:
+  state_db:
+    type: postgres
+    params: {...}
+    include: []  # don't monitor anything
+state:
+  connection: state_db
+  schema: db.axolotl
+```
+
+For production deployments, it's often useful to have a local config pointing at your production state db. That way, you can run `axolotl history` locally, but view production metrics. Your local connection could also use a read-only role for added safety.
+
 
 # Reading Alerts
 You can run `axolotl alerts` to get a list of alerts: what changed between this run and the last. By default, this command only shows Major and Minor alerts. You can pass `--changed` to include all changes, or `--all` to explicitly list unchanged metrics as well.
