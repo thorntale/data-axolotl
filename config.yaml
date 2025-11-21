@@ -1,7 +1,7 @@
 max_threads: 10
 
-run_timeout_seconds: 600
-connection_timeout_seconds: 600
+run_timeout_seconds: 1200
+connection_timeout_seconds: 1200
 query_timeout_seconds: 60
 
 exclude_expensive_queries: false
@@ -17,5 +17,6 @@ connections:
       private_key_file_pwd: "yetisson"
     include:
       - template_data
+      - global_weather__climate_data_for_bi
     exclude:
       - template_data.public

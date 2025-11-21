@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Optional
 from typing import Dict
 from typing import List
+from typing import Set
 from collections import defaultdict
 import sys
 
@@ -22,19 +23,26 @@ class AlertReport:
     def __init__(self, metric_set):
         self.metric_set = metric_set
 
-    def print(self, save_path: Optional[Path]):
+    def print(
+        self,
+        save_path: Optional[Path],
+        level: Set[AlertSeverity] = {AlertSeverity.Major, AlertSeverity.Minor},
+    ) -> None:
         if save_path:
             try:
                 save_path.mkdir(parents=True, exist_ok=True)
                 with open(save_path / "alerts.txt", "w") as f:
                     self.console = Console(file=f, width=120)
-                    self._print()
+                    self._print(level)
             finally:
                 self.console = Console()
         else:
-            self._print()
+            self._print(level)
 
-    def _print(self) -> None:
+    def _print(
+        self,
+        level: Set[AlertSeverity],
+    ) -> None:
         all_alerts = self.metric_set.get_all_alerts()
 
         # severity -> table -> column|None -> alert
@@ -44,6 +52,8 @@ class AlertReport:
             grouped_alerts[a.alert_severity][a.key.target_table][a.key.target_column] += [a]
 
         for severity in AlertSeverity:
+            if severity not in level:
+                continue
             alerts_by_table_column = grouped_alerts[severity]
             num_alerts = sum(
                 1

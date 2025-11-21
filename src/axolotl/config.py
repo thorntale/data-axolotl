@@ -324,8 +324,8 @@ class SnowflakeConnectionConfig(BaseConnectionConfig):
 class AxolotlConfig(BaseModel):
     """Top-level configuration for Axolotl."""
     max_threads: int = 10
-    run_timeout_seconds: int = 60
-    connection_timeout_seconds: int = 300
+    run_timeout_seconds: int = 600
+    connection_timeout_seconds: int = 600
     query_timeout_seconds: int = 60
     exclude_expensive_queries: bool = False
     exclude_complex_queries: bool = False

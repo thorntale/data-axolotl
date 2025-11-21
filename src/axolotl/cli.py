@@ -19,6 +19,7 @@ from .config import load_config, SnowflakeConnectionConfig, IncludeDerictive
 from .live_run_console import live_run_console
 from .generate_config_interactive import generate_config_interactive
 from .timeouts import Timeout
+from .trackers import AlertSeverity
 import traceback
 
 
@@ -161,6 +162,14 @@ save_arg = typer.Option(
     '--save',
     help="Save report artifacts at the specified location."
 )
+changed_arg = typer.Option(
+    '--changed',
+    help="Include change-level alerts."
+)
+all_alerts_arg = typer.Option(
+    '--all',
+    help="Include change alerts and unchanged alerts."
+)
 
 def _get_metric_set(
     includes: List[IncludeDerictive] = [],
@@ -202,13 +211,22 @@ def report(
     target: Annotated[List[str], target_arg] = [],
     run_id: Annotated[Optional[int], run_id_arg] = None,
     save: Annotated[Optional[Path], save_arg] = None,
+    changed: Annotated[Optional[bool], changed_arg] = False,
+    all_alerts: Annotated[Optional[bool], all_alerts_arg] = False,
 ):
     """
     Do only the report generation step of run.
     """
     parsed_targets = [IncludeDerictive.from_string(t) for t in target]
     metric_set = _get_metric_set(parsed_targets, run_id)
-    AlertReport(metric_set).print(save)
+    level = (
+        { AlertSeverity.Major, AlertSeverity.Minor, AlertSeverity.Changed, AlertSeverity.Unchanged }
+        if all_alerts
+        else { AlertSeverity.Major, AlertSeverity.Minor, AlertSeverity.Changed }
+        if changed
+        else { AlertSeverity.Major, AlertSeverity.Minor }
+    )
+    AlertReport(metric_set).print(save, level)
     HistoryReport(metric_set).print(save)
 
 @app.command()
@@ -216,11 +234,20 @@ def alerts(
     target: Annotated[List[str], target_arg] = [],
     run_id: Annotated[Optional[int], run_id_arg] = None,
     save: Annotated[Optional[Path], save_arg] = None,
+    changed: Annotated[Optional[bool], changed_arg] = False,
+    all_alerts: Annotated[Optional[bool], all_alerts_arg] = False,
 ):
     """ Show alerts """
     parsed_targets = [IncludeDerictive.from_string(t) for t in target]
     metric_set = _get_metric_set(parsed_targets, run_id)
-    AlertReport(metric_set).print(save)
+    level = (
+        { AlertSeverity.Major, AlertSeverity.Minor, AlertSeverity.Changed, AlertSeverity.Unchanged }
+        if all_alerts
+        else { AlertSeverity.Major, AlertSeverity.Minor, AlertSeverity.Changed }
+        if changed
+        else { AlertSeverity.Major, AlertSeverity.Minor }
+    )
+    AlertReport(metric_set).print(save, level)
 
 @app.command()
 def history(

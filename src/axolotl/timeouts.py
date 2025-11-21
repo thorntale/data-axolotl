@@ -98,7 +98,7 @@ class Timeout:
 
         return self.deadline - time.monotonic()
 
-    def stop(self) -> bool:
+    def stop(self) -> float:
         """
         Stops the timeout timer. Returns the duration.
 
