@@ -15,7 +15,7 @@ from .trackers import AlertSeverity
 from .display_utils import pretty_table_name
 
 from .trackers import MetricTracker, MetricAlert, MetricKey
-from .state_dao import FqTable
+from .connectors.state_dao import FqTable
 
 class AlertReport:
     console = Console()

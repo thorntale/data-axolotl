@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, List
 import inspect
 
 from pydantic import BaseModel, model_validator
-from .state_dao import IncludeDerictive, FqTable
+from .connectors.state_dao import IncludeDerictive, FqTable
 
 
 class BaseConnectionConfig(BaseModel):

@@ -12,9 +12,9 @@ from statistics import stdev
 
 import humanize
 
-from .snowflake_connection import SimpleDataType
+from .connectors.snowflake_connection import SimpleDataType
 from .display_utils import maybe_float
-from .state_dao import Metric, FqTable
+from .connectors.state_dao import Metric, FqTable
 from .line_chart import arr_to_dots
 
 

@@ -3,8 +3,8 @@ from typing import Dict
 from datetime import datetime
 from datetime import timedelta
 
-from .state_dao import Metric
-from .snowflake_connection import get_simple_data_type
+from .connectors.state_dao import Metric
+from .connectors.snowflake_connection import get_simple_data_type
 
 
 

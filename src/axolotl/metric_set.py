@@ -8,10 +8,10 @@ from collections import defaultdict
 import humanize
 
 from .trackers import MetricTracker, MetricAlert, MetricKey, AlertSeverity, AlertMethod
-from .state_dao import Metric, Run, FqTable
+from .connectors.state_dao import Metric, Run, FqTable
 from . import derived_metrics
 from . import trackers as ts
-from .snowflake_connection import SimpleDataType
+from .connectors.snowflake_connection import SimpleDataType
 
 
 class MetricSet:

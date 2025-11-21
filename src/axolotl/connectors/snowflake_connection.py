@@ -23,12 +23,12 @@ import snowflake.connector
 from snowflake.connector import DictCursor
 from rich.console import Console
 
-from .config import AxolotlConfig, SnowflakeConnectionConfig
-from .state_dao import Metric, FqTable
-from .live_run_console import LiveConsole
-from .metric_query import QueryStatus, MetricQuery
-from .utils import is_timed_out
-from .snowflake_utils import (
+from ..config import AxolotlConfig, SnowflakeConnectionConfig
+from ..connectors.state_dao import Metric, FqTable
+from ..live_run_console import LiveConsole
+from ..metric_query import QueryStatus, MetricQuery
+from ..utils import is_timed_out
+from ..snowflake_utils import (
     extract_histogram,
     extract_percentiles,
     extract_simple_metrics,
@@ -37,8 +37,8 @@ from .snowflake_utils import (
     query_priority,
 )
 
-from .database_types import SimpleDataType, ColumnInfo
-from .timeouts import Timeout
+from ..database_types import SimpleDataType, ColumnInfo
+from ..timeouts import Timeout
 
 
 class SnowflakeConn:

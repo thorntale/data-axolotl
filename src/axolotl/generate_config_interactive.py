@@ -13,7 +13,7 @@ from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
 from rich.syntax import Syntax
 from readchar import readkey, key
-from .snowflake_connection import SnowflakeConn
+from .connectors.snowflake_connection import SnowflakeConn
 
 
 def generate_config_interactive(config_path: Path) -> bool:

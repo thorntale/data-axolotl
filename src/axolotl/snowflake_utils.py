@@ -11,7 +11,7 @@ from typing import (
     Callable,
     Optional,
 )
-from .state_dao import Metric, FqTable
+from .connectors.state_dao import Metric, FqTable
 from .database_types import SimpleDataType, ColumnInfo
 from .metric_query import QueryStatus, MetricQuery
 

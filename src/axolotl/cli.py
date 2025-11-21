@@ -10,8 +10,8 @@ from importlib.metadata import version
 import typer
 from tabulate import tabulate
 from .state_connection import get_conn
-from .snowflake_connection import SnowflakeConn
-from .state_dao import StateDAO
+from .connectors.snowflake_connection import SnowflakeConn
+from .connectors.state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
 from .alert_report import AlertReport
