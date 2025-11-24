@@ -17,6 +17,7 @@ from typing import (
     Set,
     Callable,
     Optional,
+    override,
 )
 
 import snowflake.connector
@@ -40,9 +41,11 @@ from ..snowflake_utils import (
 
 from ..database_types import SimpleDataType, ColumnInfo
 from ..timeouts import Timeout
+from .base_connection import BaseConnection
+from .identifiers import IncludeDirective
 
 
-class SnowflakeConn:
+class SnowflakeConn(BaseConnection[SnowflakeConnectionConfig, Any]):
     """
     Wraps a Snowflake conn in order to take a snapshot of a list of databases
     and schemas.
@@ -50,7 +53,7 @@ class SnowflakeConn:
 
     def __init__(
         self,
-        config: AxolotlConfig,
+        axolotl_config: AxolotlConfig,
         connection_config: SnowflakeConnectionConfig,
         run_id: int,
         console: Console | LiveConsole = Console(),
@@ -63,59 +66,50 @@ class SnowflakeConn:
             connection_name: Name of the connection to use from config.connections
             run_id: Unique identifier for this snapshot run
         """
-        self.console = console
+        super().__init__(
+            axolotl_config,
+            connection_config,
+            run_id,
+            console,
+        )
 
-        # Store connection options and metrics config
-        self.connection_config = connection_config
-
-        self.max_threads = connection_config.max_threads or config.max_threads
+        self.max_threads = connection_config.max_threads or axolotl_config.max_threads
         self.conn_timeout = Timeout(
             timeout_seconds=connection_config.connection_timeout_seconds
-            or config.connection_timeout_seconds,
+            or axolotl_config.connection_timeout_seconds,
             detail=f"connection:{connection_config.name}",
         )
         self.per_query_timeout_seconds = (
-            connection_config.query_timeout_seconds or config.query_timeout_seconds
+            connection_config.query_timeout_seconds or axolotl_config.query_timeout_seconds
         )
         self.exclude_expensive_queries = (
             connection_config.exclude_expensive_queries
             if connection_config.exclude_expensive_queries is not None
-            else config.exclude_expensive_queries
+            else axolotl_config.exclude_expensive_queries
         )
         self.exclude_complex_queries = (
             connection_config.exclude_complex_queries
             if connection_config.exclude_complex_queries is not None
-            else config.exclude_complex_queries
+            else axolotl_config.exclude_complex_queries
         )
 
-        self.run_id = run_id
-
-    def __enter__(self):
-        self.conn = SnowflakeConn.get_conn(self.console, self.connection_config.params)
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.conn:
-            self.conn.close()
-        # Return None to propagate any exceptions
-        return None
-
+    @override
     @staticmethod
     def get_conn(
-        console,
-        conn_params,
+        console: Console | LiveConsole,
+        params: Dict[str, Any],
     ):
         try:
-            return snowflake.connector.connect(**conn_params)
-
+            return snowflake.connector.connect(**params)
         except Exception:
             # TODO: Don't print sensitive connection params
             console.print(
-                f"Failed to create snowflake connection: {conn_params.get('connection_name')}"
+                f"Failed to create snowflake connection: {params.get('connection_name')}"
             )
             traceback.format_exc()
             raise
 
+    @override
     def snapshot(self, run_timeout: Timeout) -> Iterator[Metric]:
         """
         Capture metrics for all tables in the configured schemas, both
@@ -133,6 +127,7 @@ class SnowflakeConn:
 
         self.console.print(f"Finished ({self.connection_config.name}) in {round(duration, 2)} seconds")
 
+    @override
     def list_only(self, run_timeout: Timeout) -> Iterator[str]:
         all_metric_queries, table_metrics = self._scan_for_queries()
         for m in table_metrics:
@@ -140,6 +135,37 @@ class SnowflakeConn:
         for q in all_metric_queries:
             for metric_name in q.metrics:
                 yield f"{q.fq_table_name}.{q.column_name} : {metric_name}"
+
+    @override
+    def state_query(self, query_string: str, data: List[Any] = []) -> List[List[Any]]:
+        assert self.conn
+        with self.conn.cursor() as cur:
+            result = cur.execute(query_string, data)
+            return result.fetchall()
+
+    @override
+    def escape_state_table(self, prefix: str, table: str) -> str:
+        # use IncludeDirective as a shortcut for parsing prefix
+        if not prefix:
+            raise ValueError('A prefix of the form `database.schema` is required when using snowflake to store state.')
+        try:
+            parsed = IncludeDirective.from_string(prefix)
+            if (
+                not parsed.database
+                or not parsed.schema
+                or parsed.table
+                or parsed.column
+                or parsed.metric
+            ):
+                raise ValueError('')
+        except Exception:
+            raise ValueError('Invalid prefix `{prefix}`. Expected prefix of the format database.schema')
+
+        return str(FqTable(
+            parsed.database,
+            parsed.schema,
+            table,
+        ))
 
     def _scan_for_queries(self) -> Tuple[List[MetricQuery], List[Metric]]:
         # scan the db and generate metric queries & table metrics
@@ -153,7 +179,7 @@ class SnowflakeConn:
             f"Found {len(table_names)} tables in {round(t_tablescan - t_start, 2)} seconds. Enumerating columns..."
         )
 
-        all_column_infos: List[ColumnInfo] = self.list_columns(databases)
+        all_column_infos: List[ColumnInfo] = self._list_columns(databases)
 
         print(f"Generating queries for {len(all_column_infos)} columns...")
         all_metric_queries: List[MetricQuery] = []
@@ -163,6 +189,7 @@ class SnowflakeConn:
         return all_metric_queries, table_metrics
 
     def _cancel_queries(self, query_ids: List[str]):
+        assert self.conn
         with self.conn.cursor() as cur:
             for query_id in query_ids:
                 try:
@@ -175,6 +202,7 @@ class SnowflakeConn:
         self,
         run_timeout: Timeout,
     ) -> Iterator[Metric]:
+        assert self.conn
         if run_timeout.is_timed_out():
             raise TimeoutError("run already timed out")
 
@@ -201,6 +229,7 @@ class SnowflakeConn:
                 )
 
         def _run_and_wait(index: int) -> List[Metric]:
+            assert self.conn
             metric_query = all_metric_queries[index]
             qid = ""
             try:
@@ -630,7 +659,7 @@ class SnowflakeConn:
 
         return queries
 
-    def list_columns(self, databases: List[str]) -> List[ColumnInfo]:
+    def _list_columns(self, databases: List[str]) -> List[ColumnInfo]:
         """
         List all columns, respecting included and excluded schemas
 
@@ -640,6 +669,7 @@ class SnowflakeConn:
         """
         column_info_arr: List[ColumnInfo] = []
 
+        assert self.conn
         with self.conn.cursor() as cur:
             cur.execute(
                 " union all ".join(
@@ -679,6 +709,7 @@ class SnowflakeConn:
         return column_info_arr
 
     def _list_included_databases(self) -> List[str]:
+        assert self.conn
         with self.conn.cursor(DictCursor) as cur:
             cur.execute("show databases")
             all_databases = [row["name"] for row in cur.fetchall()]
@@ -707,6 +738,7 @@ class SnowflakeConn:
         metrics = []
         fq_table_names: List[FqTable] = []
 
+        assert self.conn
         for database in databases:
             with self.conn.cursor(DictCursor) as cur:
                 try:

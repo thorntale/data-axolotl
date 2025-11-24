@@ -12,10 +12,18 @@ from typing import Any, Dict, Optional, List
 import inspect
 
 from pydantic import BaseModel, model_validator
+from rich.console import Console
+
 from .connectors.identifiers import IncludeDirective, FqTable
+from .connectors.snowflake_connection import SnowflakeConn
+from .connectors.sqlite_connection import SqliteConn
+from .connectors.base_connection import BaseConnection
+from .connectors.state_dao import StateDAO
 
 
 class BaseConnectionConfig(BaseModel):
+    axolotl_config: AxolotlConfig
+
     name: str
     type: str
     params: Dict[str, Any]
@@ -28,6 +36,9 @@ class BaseConnectionConfig(BaseModel):
     query_timeout_seconds: Optional[int] = None
     exclude_expensive_queries: Optional[bool] = None
     exclude_complex_queries: Optional[bool] = None
+
+    def get_conn(self, run_id: int, console: Console) -> BaseConnection[BaseConnectionConfig, Any]:
+        raise NotImplementedError('Need to implement get_conn in subclass of BaseConnectionConfig')
 
     def database_is_included_at_all(self, database: str) -> bool:
         """ Return True if this database is included in _any_ metrics. """
@@ -321,6 +332,23 @@ class SnowflakeConnectionConfig(BaseConnectionConfig):
             )
         return self
 
+    def get_conn(self, run_id: int, console: Console) -> BaseConnection[BaseConnectionConfig, Any]:
+        return SnowflakeConn(self.axolotl_config, self, run_id, console)
+
+
+class SqliteConnectionConfig(BaseConnectionConfig):
+    type: str = "sqlite"
+    path: str = "./local.db"
+
+    def get_conn(self, run_id: int, console: Console) -> BaseConnection[BaseConnectionConfig, Any]:
+        return SqliteConn(self.axolotl_config, self, run_id, console)
+
+
+class StateConfig(BaseModel):
+    connection: str
+    prefix: str
+
+
 class AxolotlConfig(BaseModel):
     """Top-level configuration for Axolotl."""
     max_threads: int = 10
@@ -330,7 +358,27 @@ class AxolotlConfig(BaseModel):
     exclude_expensive_queries: bool = False
     exclude_complex_queries: bool = False
 
+    state: str | StateConfig = 'local.db'
+
     connections: dict[str, BaseConnectionConfig]
+
+    def get_state_dao(self) -> StateDAO:
+        run_id = -1
+        console = Console()
+        if isinstance(self.state, str):
+            sqlite_config = SqliteConnectionConfig(
+                name="local_state",
+                axolotl_config=self,
+                params={'path': self.state},
+            )
+            return StateDAO(sqlite_config.get_conn(run_id, console))
+        else:
+            if not self.state.connection in self.connections:
+                raise ValueError(f'Connection referenced in state ({self.state.connection}) is not defined.')
+            return StateDAO(
+                self.connections[self.state.connection].get_conn(run_id, console),
+                self.state.prefix,
+            )
 
 
 def _substitute_env_vars(value: Any) -> Any:
@@ -394,6 +442,11 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     # TODO: later, support conn types that aren't snowflake
     connections: Dict[str, BaseConnectionConfig] = {}
 
+    axolotl_config = AxolotlConfig(
+        **config,
+        connections={},
+    )
+
     for conn_name, conn_config in config.pop("connections", {}).items():
         conn_type = conn_config.get("type", "snowflake")
         if conn_type == "snowflake":
@@ -406,14 +459,14 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
                 'include': parse_include_list(conn_config.get("include", None)),
                 'exclude': parse_include_list(conn_config.get("exclude", [])),
             }
-            connections[conn_name] = SnowflakeConnectionConfig(**opts)
+            axolotl_config.connections[conn_name] = SnowflakeConnectionConfig(
+                **opts,
+                axolotl_config=axolotl_config,
+            )
         else:
             raise ValueError(f"Invalid connection type {conn_type}")
 
-    return AxolotlConfig(
-        connections=connections,
-        **config,
-    )
+    return axolotl_config
 
 def parse_include_list(items: List[str] | None) -> List[IncludeDirective] | None:
     if items is None:

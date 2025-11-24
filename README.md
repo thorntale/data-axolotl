@@ -203,7 +203,7 @@ connections:
     include: []  # don't monitor anything
 state:
   connection: state_db
-  schema: db.axolotl
+  prefix: db.axolotl
 ```
 
 For production deployments, it's often useful to have a local config pointing at your production state db. That way, you can run `axolotl history` locally, but view production metrics. Your local connection could also use a read-only role for added safety.

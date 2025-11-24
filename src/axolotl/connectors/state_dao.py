@@ -13,6 +13,7 @@ import traceback
 import re
 
 from .identifiers import FqTable, IncludeDirective
+from .base_connection import BaseConnection
 
 
 class Run(NamedTuple):
@@ -92,20 +93,19 @@ class StateDAO:
     conn - a Connection object for the db
     table_prefix - what to put before the table name when making queries
     """
-    def __init__(self, conn, table_prefix: str = ""):
+    def __init__(
+        self,
+        conn: BaseConnection,
+        table_prefix: str = "",
+    ):
         self.conn = conn
         self.table_prefix = table_prefix
         self.setup_db_tables()
 
-    def query(self, query_string: str, data: List[Any] = []) -> List[List[Any]]:
-        cursor = self.conn.cursor()
-        result = cursor.execute(query_string, data)
-        return result.fetchall()
-
     def setup_db_tables(self):
         p = self.table_prefix
-        self.query(f"""
-            CREATE TABLE IF NOT EXISTS {p}thorntale_run (
+        self.conn.state_query(f"""
+            CREATE TABLE IF NOT EXISTS {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')} (
                 run_id INTEGER PRIMARY KEY,
                 started_at DATETIME NOT NULL,
                 finished_at DATETIME DEFAULT NULL,
@@ -113,8 +113,8 @@ class StateDAO:
             );
         """)
 
-        self.query(f"""
-            CREATE TABLE IF NOT EXISTS {p}thorntale_metric (
+        self.conn.state_query(f"""
+            CREATE TABLE IF NOT EXISTS {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')} (
                 run_id INTEGER NOT NULL,
                 target_table TEXT NOT NULL,
                 target_column TEXT DEFAULT NULL,
@@ -125,14 +125,6 @@ class StateDAO:
                 UNIQUE (run_id, target_table, target_column, metric_name)
             );
         """)
-
-        try:
-            self.query(f"""
-                ALTER TABLE {p}thorntale_metric ADD COLUMN value_is_datetime INTEGER NOT NULL DEFAULT 0;
-            """)
-        except:
-            # if the table was already updated this will fail, which is fine
-            pass
 
     @contextmanager
     def make_run(self):
@@ -150,10 +142,10 @@ class StateDAO:
     def _make_new_run(self) -> int:
         """ returns the run id """
         p = self.table_prefix
-        next_id = self.query(f"""SELECT max(run_id) + 1 FROM {p}thorntale_run""")[0][0] or 1
-        self.query(
+        next_id = self.conn.state_query(f"""SELECT max(run_id) + 1 FROM {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')}""")[0][0] or 1
+        self.conn.state_query(
             f"""
-                INSERT INTO {p}thorntale_run (run_id, started_at)
+                INSERT INTO {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')} (run_id, started_at)
                 VALUES (?, ?)
             """,
             [next_id, datetime.utcnow()],
@@ -162,9 +154,9 @@ class StateDAO:
 
     def _end_run(self, run_id: int, successful: bool):
         p = self.table_prefix
-        self.query(
+        self.conn.state_query(
             f"""
-                UPDATE {p}thorntale_run SET finished_at = ?, successful = ? WHERE run_id = ?
+                UPDATE {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')} SET finished_at = ?, successful = ? WHERE run_id = ?
             """,
             [datetime.utcnow(), 1 if successful else 0, run_id],
         )
@@ -179,9 +171,9 @@ class StateDAO:
                 None if row[3] is None else False if row[3] == 0 else True,
             )
             for row
-            in self.query(f"""
+            in self.conn.state_query(f"""
                 SELECT run_id, started_at, finished_at, successful
-                FROM {p}thorntale_run
+                FROM {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')}
             """)
         ]
 
@@ -194,12 +186,12 @@ class StateDAO:
 
     def delete_run(self, run_id: int):
         p = self.table_prefix
-        self.query(
-            f"DELETE FROM {p}thorntale_run WHERE run_id = ?",
+        self.conn.state_query(
+            f"DELETE FROM {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')} WHERE run_id = ?",
             [run_id],
         )
-        self.query(
-            f"DELETE FROM {p}thorntale_metric WHERE run_id = ?",
+        self.conn.state_query(
+            f"DELETE FROM {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')} WHERE run_id = ?",
             [run_id],
         )
 
@@ -210,9 +202,9 @@ class StateDAO:
             if isinstance(metric.metric_value, (datetime, date)) else
             json.dumps(metric.metric_value)
         )
-        self.query(
+        self.conn.state_query(
             f"""
-                INSERT INTO {p}thorntale_metric (
+                INSERT INTO {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')} (
                     run_id,
                     target_table,
                     target_column,
@@ -255,7 +247,7 @@ class StateDAO:
             where_values += [run_id_lte]
 
         if only_successful:
-            where_clause += f" AND run_id in (select run_id from {p}thorntale_run where successful)"
+            where_clause += f" AND run_id in (select run_id from {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')} where successful)"
 
         if target_table is not None:
             where_clause += " AND target_table = ?"
@@ -286,9 +278,9 @@ class StateDAO:
                 ensure_tz(datetime.fromisoformat(row[6])),
             )
             for row
-            in self.query(f"""
+            in self.conn.state_query(f"""
                 SELECT run_id, target_table, target_column, metric_name, metric_value, value_is_datetime, measured_at
-                FROM {p}thorntale_metric
+                FROM {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')}
                 WHERE 1 = 1 {where_clause}
             """, where_values)
         ]

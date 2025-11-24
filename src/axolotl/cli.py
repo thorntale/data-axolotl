@@ -9,8 +9,6 @@ from importlib.metadata import version
 
 import typer
 from tabulate import tabulate
-from .state_connection import get_conn
-from .connectors.snowflake_connection import SnowflakeConn
 from .connectors.state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
@@ -21,6 +19,7 @@ from .live_run_console import live_run_console
 from .generate_config_interactive import generate_config_interactive
 from .timeouts import Timeout
 from .trackers import AlertSeverity
+from .config import AxolotlConfig
 import traceback
 
 
@@ -42,17 +41,7 @@ def version_arg(
 ):
     pass
 
-@app.command()
-def run(
-    config_path: Annotated[Optional[Path], typer.Option(help="The run configuration file. Defaults to './config.yaml'")] = None,
-    list_only: Annotated[Optional[bool], typer.Option(
-        '--list-only',
-        help="List which metrics would be generated then exit",
-    )] = False,
-):
-    """
-    Execute a new run. Takes a --config path/to/config.yaml
-    """
+def _get_config(config_path: Optional[Path]) -> AxolotlConfig:
     console = Console()
 
     if not config_path:
@@ -69,10 +58,26 @@ def run(
             console.print(f"Could not find config file [red]{escape(str(config_path))}[/red].\nPlease specify a valid '--config-path', or run with no config path to generate a config interactively.")
             raise typer.Exit(code=1)
 
-    state_conn = get_conn()
-    state = StateDAO(state_conn)
+    return load_config(config_path)
 
-    config = load_config(config_path)
+
+config_path_arg = typer.Option(help="The run configuration file. Defaults to './config.yaml'")
+
+@app.command()
+def run(
+    config_path: Annotated[Optional[Path], config_path] = None,
+    list_only: Annotated[Optional[bool], typer.Option(
+        '--list-only',
+        help="List which metrics would be generated then exit",
+    )] = False,
+):
+    """
+    Execute a new run. Takes a --config path/to/config.yaml
+    """
+    console = Console()
+    config = _get_config(config_path)
+    state = config.get_state_dao()
+
     #t_run_start = time.monotonic()
     #run_timeout_at = t_run_start + config.run_timeout_seconds
 
@@ -83,31 +88,28 @@ def run(
             console.print(f"Starting run #{run_id}...")
 
             for conn_config in config.connections.values():
-                if isinstance(conn_config, SnowflakeConnectionConfig):
-                    with SnowflakeConn(config, conn_config, run_id, console) as snowflake_conn:
-                        if list_only:
-                            for m in snowflake_conn.list_only(run_timeout):
-                                console.print(m)
-                        else:
-                            for m in snowflake_conn.snapshot(run_timeout):
-                                try:
-                                    state.record_metric(m)
-                                except Exception as e:
-                                    print(f"Error recording metric: {e}")
-                                    print(traceback.format_exc())
-                                    raise
-                else:
-                    raise TypeError('Unknown connection config type')
+                with conn_config.get_conn(run_id, console) as conn:
+                    if list_only:
+                        for m in conn.list_only(run_timeout):
+                            console.print(m)
+                    else:
+                        for m in conn.snapshot(run_timeout):
+                            try:
+                                state.record_metric(m)
+                            except Exception as e:
+                                print(f"Error recording metric: {e}")
+                                print(traceback.format_exc())
+                                raise
 
 
 @app.command()
-def list():
+def list(
+    config_path: Annotated[Optional[Path], config_path] = None,
+):
     """
     Show past runs.
     """
-    state_conn = get_conn()
-    state = StateDAO(state_conn)
-
+    state = _get_config(config_path).get_state_dao()
     runs = sorted(state.get_all_runs(), key=lambda r: r.run_id)
 
     print(
@@ -133,15 +135,17 @@ def list():
 
 
 @app.command()
-def rm_run(id: int):
+def rm_run(
+    id: int,
+    config_path: Annotated[Optional[Path], config_path] = None,
+):
     """
     Remove a past run from the state db.
 
     Args:
         id: The ID of the run to remove
     """
-    state_conn = get_conn()
-    state = StateDAO(state_conn)
+    state = _get_config(config_path).get_state_dao()
     runs = state.get_all_runs()
     if id in [run.run_id for run in runs]:
         state.delete_run(id)
@@ -175,9 +179,9 @@ all_alerts_arg = typer.Option(
 def _get_metric_set(
     includes: List[IncludeDirective] = [],
     run_id: Optional[int] = None,
+    config_path: Optional[Path] = None,
 ):
-    state_conn = get_conn()
-    state = StateDAO(state_conn)
+    state = _get_config(config_path).get_state_dao()
 
     run_id = run_id or state.get_latest_successful_run_id()
     if run_id is None:
@@ -214,12 +218,13 @@ def report(
     save: Annotated[Optional[Path], save_arg] = None,
     changed: Annotated[Optional[bool], changed_arg] = False,
     all_alerts: Annotated[Optional[bool], all_alerts_arg] = False,
+    config_path: Annotated[Optional[Path], config_path] = None,
 ):
     """
     Do only the report generation step of run.
     """
     parsed_targets = [IncludeDirective.from_string(t) for t in target]
-    metric_set = _get_metric_set(parsed_targets, run_id)
+    metric_set = _get_metric_set(parsed_targets, run_id, config_path)
     level = (
         { AlertSeverity.Major, AlertSeverity.Minor, AlertSeverity.Changed, AlertSeverity.Unchanged }
         if all_alerts
@@ -237,10 +242,11 @@ def alerts(
     save: Annotated[Optional[Path], save_arg] = None,
     changed: Annotated[Optional[bool], changed_arg] = False,
     all_alerts: Annotated[Optional[bool], all_alerts_arg] = False,
+    config_path: Annotated[Optional[Path], config_path] = None,
 ):
     """ Show alerts """
     parsed_targets = [IncludeDirective.from_string(t) for t in target]
-    metric_set = _get_metric_set(parsed_targets, run_id)
+    metric_set = _get_metric_set(parsed_targets, run_id, config_path)
     level = (
         { AlertSeverity.Major, AlertSeverity.Minor, AlertSeverity.Changed, AlertSeverity.Unchanged }
         if all_alerts
@@ -255,10 +261,11 @@ def history(
     target: Annotated[List[str], target_arg] = [],
     run_id: Annotated[Optional[int], run_id_arg] = None,
     save: Annotated[Optional[Path], save_arg] = None,
+    config_path: Annotated[Optional[Path], config_path] = None,
 ):
     """ Show data history """
     parsed_targets = [IncludeDirective.from_string(t) for t in target]
-    metric_set = _get_metric_set(parsed_targets, run_id)
+    metric_set = _get_metric_set(parsed_targets, run_id, config_path)
     HistoryReport(metric_set).print(save)
 
 def main():

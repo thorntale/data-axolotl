@@ -23,6 +23,7 @@ def parse_ident(sql_ident: str) -> str:
         raise TypeError(f'Unparsable sql identifier {sql_ident!r}')
     else:
         return sql_ident
+
 def parse_maybe_ident(sql_ident: str | None) -> str | None:
     if sql_ident is None:
         return None
