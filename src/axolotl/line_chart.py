@@ -162,7 +162,7 @@ class Chart:
             max_value = max(max_value, 0.0)
             min_value = min(min_value, 0.0)
 
-        if max_value == min_value:
+        if abs(max_value - min_value) < 1e-12:
             class NoHeightAxis:
                 is_constant = True
                 def get_y(self, value) -> int:
