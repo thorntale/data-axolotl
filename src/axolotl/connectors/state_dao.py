@@ -13,7 +13,9 @@ import traceback
 import re
 
 from .identifiers import FqTable, IncludeDirective
-from .base_connection import BaseConnection
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .base_connection import BaseConnection
 
 
 class Run(NamedTuple):

@@ -12,7 +12,7 @@ from statistics import stdev
 
 import humanize
 
-from .connectors.snowflake_connection import SimpleDataType
+from .database_types import SimpleDataType
 from .display_utils import maybe_float
 from .connectors.state_dao import Metric
 from .connectors.identifiers import FqTable

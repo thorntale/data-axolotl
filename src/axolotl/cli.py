@@ -9,7 +9,6 @@ from importlib.metadata import version
 
 import typer
 from tabulate import tabulate
-from .connectors.state_dao import StateDAO
 from .metric_set import MetricSet
 from .history_report import HistoryReport
 from .alert_report import AlertReport
@@ -65,7 +64,7 @@ config_path_arg = typer.Option(help="The run configuration file. Defaults to './
 
 @app.command()
 def run(
-    config_path: Annotated[Optional[Path], config_path] = None,
+    config_path: Annotated[Optional[Path], config_path_arg] = None,
     list_only: Annotated[Optional[bool], typer.Option(
         '--list-only',
         help="List which metrics would be generated then exit",
@@ -76,41 +75,38 @@ def run(
     """
     console = Console()
     config = _get_config(config_path)
-    state = config.get_state_dao()
 
-    #t_run_start = time.monotonic()
-    #run_timeout_at = t_run_start + config.run_timeout_seconds
+    with config.get_state_dao() as state:
+        with live_run_console() as console:
+            with state.make_run() as run_id:
+                run_timeout = Timeout(timeout_seconds=config.run_timeout_seconds, detail=f"run_id: {run_id}")
+                run_timeout.start()
+                console.print(f"Starting run #{run_id}...")
 
-    with live_run_console() as console:
-        with state.make_run() as run_id:
-            run_timeout = Timeout(timeout_seconds=config.run_timeout_seconds, detail=f"run_id: {run_id}")
-            run_timeout.start()
-            console.print(f"Starting run #{run_id}...")
-
-            for conn_config in config.connections.values():
-                with conn_config.get_conn(run_id, console) as conn:
-                    if list_only:
-                        for m in conn.list_only(run_timeout):
-                            console.print(m)
-                    else:
-                        for m in conn.snapshot(run_timeout):
-                            try:
-                                state.record_metric(m)
-                            except Exception as e:
-                                print(f"Error recording metric: {e}")
-                                print(traceback.format_exc())
-                                raise
+                for conn_config in config.connections.values():
+                    with conn_config.get_conn(run_id, console) as conn:
+                        if list_only:
+                            for m in conn.list_only(run_timeout):
+                                console.print(m)
+                        else:
+                            for m in conn.snapshot(run_timeout):
+                                try:
+                                    state.record_metric(m)
+                                except Exception as e:
+                                    print(f"Error recording metric: {e}")
+                                    print(traceback.format_exc())
+                                    raise
 
 
 @app.command()
 def list(
-    config_path: Annotated[Optional[Path], config_path] = None,
+    config_path: Annotated[Optional[Path], config_path_arg] = None,
 ):
     """
     Show past runs.
     """
-    state = _get_config(config_path).get_state_dao()
-    runs = sorted(state.get_all_runs(), key=lambda r: r.run_id)
+    with _get_config(config_path).get_state_dao() as state:
+        runs = sorted(state.get_all_runs(), key=lambda r: r.run_id)
 
     print(
         tabulate(
@@ -137,7 +133,7 @@ def list(
 @app.command()
 def rm_run(
     id: int,
-    config_path: Annotated[Optional[Path], config_path] = None,
+    config_path: Annotated[Optional[Path], config_path_arg] = None,
 ):
     """
     Remove a past run from the state db.
@@ -145,13 +141,13 @@ def rm_run(
     Args:
         id: The ID of the run to remove
     """
-    state = _get_config(config_path).get_state_dao()
-    runs = state.get_all_runs()
-    if id in [run.run_id for run in runs]:
-        state.delete_run(id)
-        typer.echo(f"Removed run {id}")
-    else:
-        typer.echo(f"Run {id} does not exist")
+    with _get_config(config_path).get_state_dao() as state:
+        runs = state.get_all_runs()
+        if id in [run.run_id for run in runs]:
+            state.delete_run(id)
+            typer.echo(f"Removed run {id}")
+        else:
+            typer.echo(f"Run {id} does not exist")
 
 
 target_arg = typer.Argument(
@@ -181,35 +177,34 @@ def _get_metric_set(
     run_id: Optional[int] = None,
     config_path: Optional[Path] = None,
 ):
-    state = _get_config(config_path).get_state_dao()
+    with _get_config(config_path).get_state_dao() as state:
+        run_id = run_id or state.get_latest_successful_run_id()
+        if run_id is None:
+            print("No run found")
+            raise typer.Exit(code=1)
 
-    run_id = run_id or state.get_latest_successful_run_id()
-    if run_id is None:
-        print("No run found")
-        raise typer.Exit(code=1)
+        runs = state.get_all_runs()
+        if run_id not in [r.run_id for r in runs]:
+            print(f"Run {run_id} does not exist.")
+            raise typer.Exit(code=1)
+        if run_id not in [r.run_id for r in runs if r.successful]:
+            print(f"Run {run_id} was not successful.")
+            raise typer.Exit(code=1)
 
-    runs = state.get_all_runs()
-    if run_id not in [r.run_id for r in runs]:
-        print(f"Run {run_id} does not exist.")
-        raise typer.Exit(code=1)
-    if run_id not in [r.run_id for r in runs if r.successful]:
-        print(f"Run {run_id} was not successful.")
-        raise typer.Exit(code=1)
+        filtered_runs = [
+            r for r in runs
+            if r.successful and r.run_id <= run_id
+        ]
 
-    filtered_runs = [
-        r for r in runs
-        if r.successful and r.run_id <= run_id
-    ]
+        metrics = [
+            m for m in state.get_metrics(
+                run_id_lte=run_id,
+                only_successful=True,
+            )
+            if not includes or m.matches_includes(includes)
+        ]
 
-    metrics = [
-        m for m in state.get_metrics(
-            run_id_lte=run_id,
-            only_successful=True,
-        )
-        if not includes or m.matches_includes(includes)
-    ]
-
-    return MetricSet(filtered_runs, metrics)
+        return MetricSet(filtered_runs, metrics)
 
 @app.command()
 def report(
@@ -218,7 +213,7 @@ def report(
     save: Annotated[Optional[Path], save_arg] = None,
     changed: Annotated[Optional[bool], changed_arg] = False,
     all_alerts: Annotated[Optional[bool], all_alerts_arg] = False,
-    config_path: Annotated[Optional[Path], config_path] = None,
+    config_path: Annotated[Optional[Path], config_path_arg] = None,
 ):
     """
     Do only the report generation step of run.
@@ -242,7 +237,7 @@ def alerts(
     save: Annotated[Optional[Path], save_arg] = None,
     changed: Annotated[Optional[bool], changed_arg] = False,
     all_alerts: Annotated[Optional[bool], all_alerts_arg] = False,
-    config_path: Annotated[Optional[Path], config_path] = None,
+    config_path: Annotated[Optional[Path], config_path_arg] = None,
 ):
     """ Show alerts """
     parsed_targets = [IncludeDirective.from_string(t) for t in target]
@@ -261,7 +256,7 @@ def history(
     target: Annotated[List[str], target_arg] = [],
     run_id: Annotated[Optional[int], run_id_arg] = None,
     save: Annotated[Optional[Path], save_arg] = None,
-    config_path: Annotated[Optional[Path], config_path] = None,
+    config_path: Annotated[Optional[Path], config_path_arg] = None,
 ):
     """ Show data history """
     parsed_targets = [IncludeDirective.from_string(t) for t in target]

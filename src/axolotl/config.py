@@ -8,8 +8,9 @@ import os
 import re
 import yaml
 from pathlib import Path
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Iterator
 import inspect
+from contextlib import contextmanager
 
 from pydantic import BaseModel, model_validator
 from rich.console import Console
@@ -362,7 +363,8 @@ class AxolotlConfig(BaseModel):
 
     connections: dict[str, BaseConnectionConfig]
 
-    def get_state_dao(self) -> StateDAO:
+    @contextmanager
+    def get_state_dao(self) -> Iterator[StateDAO]:
         run_id = -1
         console = Console()
         if isinstance(self.state, str):
@@ -371,14 +373,14 @@ class AxolotlConfig(BaseModel):
                 axolotl_config=self,
                 params={'path': self.state},
             )
-            return StateDAO(sqlite_config.get_conn(run_id, console))
+            with sqlite_config.get_conn(run_id, console) as conn:
+                yield StateDAO(conn)
         else:
             if not self.state.connection in self.connections:
                 raise ValueError(f'Connection referenced in state ({self.state.connection}) is not defined.')
-            return StateDAO(
-                self.connections[self.state.connection].get_conn(run_id, console),
-                self.state.prefix,
-            )
+            connection_config = self.connections[self.state.connection]
+            with connection_config.get_conn(run_id, console) as conn:
+                yield StateDAO(conn, self.state.prefix)
 
 
 def _substitute_env_vars(value: Any) -> Any:
@@ -443,7 +445,11 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     connections: Dict[str, BaseConnectionConfig] = {}
 
     axolotl_config = AxolotlConfig(
-        **config,
+        **{
+            k: v
+            for k, v in config.items()
+            if k != 'connections'
+        },
         connections={},
     )
 

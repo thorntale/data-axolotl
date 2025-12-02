@@ -2,7 +2,9 @@ from typing import TypeVar, Dict, Any, Optional, List
 
 from rich.console import Console
 
-from ..config import AxolotlConfig
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..config import AxolotlConfig
 from ..live_run_console import LiveConsole
 from ..timeouts import Timeout
 
@@ -28,6 +30,7 @@ class BaseConnection[ConfigT, ConnT]:
 
     def __enter__(self):
         self.conn = self.__class__.get_conn(self.console, self.connection_config.params)
+        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.conn:

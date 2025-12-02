@@ -24,7 +24,9 @@ import snowflake.connector
 from snowflake.connector import DictCursor
 from rich.console import Console
 
-from ..config import AxolotlConfig, SnowflakeConnectionConfig
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..config import AxolotlConfig, SnowflakeConnectionConfig
 from ..connectors.state_dao import Metric
 from .identifiers import FqTable
 from ..live_run_console import LiveConsole
@@ -45,7 +47,7 @@ from .base_connection import BaseConnection
 from .identifiers import IncludeDirective
 
 
-class SnowflakeConn(BaseConnection[SnowflakeConnectionConfig, Any]):
+class SnowflakeConn(BaseConnection):
     """
     Wraps a Snowflake conn in order to take a snapshot of a list of databases
     and schemas.
