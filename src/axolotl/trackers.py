@@ -177,6 +177,9 @@ class MetricTracker(ABC):
             return sum(v) / len(v)
 
         sd = stdev(latest_30)
+        # Don't use delta-z when stddev is 0
+        if abs(sd) < 1e-10:
+            return None
         diff = latest - avg(latest_30)
 
         if sd == 0 and diff == 0:
