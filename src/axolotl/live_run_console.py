@@ -34,9 +34,9 @@ class LiveConsole:
         if in_progress:
             self.rich_live.update(Panel(
                 renderable="\n".join(
-                    f"{q.fq_table_name} {q.column_name}: {q.query_detail} ({q.query_id})"
+                    f"[dim]#{q.query_id}[/dim] [blue]{q.query_detail}[/blue] {q.column_name}"
                     for q in sorted(in_progress, key=lambda m: m.timeout_at)
-                ),
+                ) + ('\n' * (10 - len(in_progress))),
                 title_align="left",
                 subtitle_align="left",
                 title=f"In Progress ({len(in_progress)})",

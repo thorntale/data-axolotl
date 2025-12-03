@@ -28,3 +28,6 @@ class MetricQuery(NamedTuple):
     # query results into Metric objects
     # Takes run_id, fq_table_name, column_name, and dict of query results, returns list of Metrics
     result_extractor: Callable[[int, FqTable, str, Dict[str, Any]], List[Metric]]
+
+    def name(self):
+        return f"{self.fq_table_name}.{self.column_name} ({self.query_detail})"

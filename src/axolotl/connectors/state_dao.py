@@ -1,16 +1,20 @@
 from __future__ import annotations
 from rich.console import Console
+from rich.panel import Panel
 from typing import List
 from typing import Any
 from typing import Optional
 from typing import NamedTuple
 from typing import Self
+from typing import Iterator
 from datetime import datetime, date
 from datetime import timezone
 from contextlib import contextmanager
 import simplejson as json  # for Decimal support
 import traceback
 import re
+import typer
+from collections.abc import Iterable
 
 from .identifiers import FqTable, IncludeDirective
 from typing import TYPE_CHECKING
@@ -105,28 +109,35 @@ class StateDAO:
         self.setup_db_tables()
 
     def setup_db_tables(self):
+        # TODO: handle errors here
         p = self.table_prefix
-        self.conn.state_query(f"""
-            CREATE TABLE IF NOT EXISTS {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')} (
-                run_id INTEGER PRIMARY KEY,
-                started_at DATETIME NOT NULL,
-                finished_at DATETIME DEFAULT NULL,
-                successful INTEGER DEFAULT NULL
-            );
-        """)
+        try:
+            self.conn.state_query(f"""
+                CREATE TABLE IF NOT EXISTS {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')} (
+                    run_id INTEGER PRIMARY KEY,
+                    started_at DATETIME NOT NULL,
+                    finished_at DATETIME DEFAULT NULL,
+                    successful INTEGER DEFAULT NULL
+                );
+            """)
 
-        self.conn.state_query(f"""
-            CREATE TABLE IF NOT EXISTS {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')} (
-                run_id INTEGER NOT NULL,
-                target_table TEXT NOT NULL,
-                target_column TEXT DEFAULT NULL,
-                metric_name TEXT NOT NULL,
-                metric_value TEXT,
-                value_is_datetime INTEGER NOT NULL DEFAULT 0,
-                measured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (run_id, target_table, target_column, metric_name)
-            );
-        """)
+            self.conn.state_query(f"""
+                CREATE TABLE IF NOT EXISTS {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')} (
+                    run_id INTEGER NOT NULL,
+                    target_table TEXT NOT NULL,
+                    target_column TEXT DEFAULT NULL,
+                    metric_name TEXT NOT NULL,
+                    metric_value TEXT,
+                    value_is_datetime INTEGER NOT NULL DEFAULT 0,
+                    measured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (run_id, target_table, target_column, metric_name)
+                );
+            """)
+        except Exception as e:
+            console = Console()
+            console.print(Panel(str(e)))
+            console.print(f"Error creating state tables. Please check your state configuration.")
+            raise typer.Exit()
 
     @contextmanager
     def make_run(self):
@@ -165,18 +176,28 @@ class StateDAO:
 
     def get_all_runs(self) -> List[Run]:
         p = self.table_prefix
+        result = self.conn.state_query(f"""
+            SELECT run_id, started_at, finished_at, successful
+            FROM {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')}
+        """)
+        def parse_dt(val: datetime | str | None) -> datetime | None:
+            if not val:
+                return None
+            elif isinstance(val, str):
+                return datetime.fromisoformat(val).replace(tzinfo=timezone.utc)
+            elif isinstance(val, datetime):
+                return val
+            else:
+                assert False, f'Invalid datetime value {val}'
         return [
             Run(
                 row[0],
-                datetime.fromisoformat(row[1]).replace(tzinfo=timezone.utc),
-                datetime.fromisoformat(row[2]).replace(tzinfo=timezone.utc) if row[2] else None,
+                parse_dt(row[1]),
+                parse_dt(row[2]),
                 None if row[3] is None else False if row[3] == 0 else True,
             )
             for row
-            in self.conn.state_query(f"""
-                SELECT run_id, started_at, finished_at, successful
-                FROM {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')}
-            """)
+            in result
         ]
 
     def get_latest_successful_run_id(self) -> Optional[int]:
@@ -197,36 +218,38 @@ class StateDAO:
             [run_id],
         )
 
-    def record_metric(self, metric: Metric):
+    def record_metric(self, metrics: Iterable[Metric]):
         p = self.table_prefix
-        serialized_value = (
-            metric.metric_value.isoformat()
-            if isinstance(metric.metric_value, (datetime, date)) else
-            json.dumps(metric.metric_value)
-        )
-        self.conn.state_query(
-            f"""
-                INSERT INTO {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')} (
-                    run_id,
-                    target_table,
-                    target_column,
-                    metric_name,
-                    metric_value,
-                    value_is_datetime,
-                    measured_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                metric.run_id,
-                str(metric.target_table),
-                metric.target_column,
-                metric.metric_name,
-                serialized_value,
-                1 if isinstance(metric.metric_value, (datetime, date)) else 0,
-                metric.measured_at,
-            ],
-        )
+        # TODO: use batch insert for warehouses
+        for metric in metrics:
+            serialized_value = (
+                metric.metric_value.isoformat()
+                if isinstance(metric.metric_value, (datetime, date)) else
+                json.dumps(metric.metric_value)
+            )
+            self.conn.state_query(
+                f"""
+                    INSERT INTO {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')} (
+                        run_id,
+                        target_table,
+                        target_column,
+                        metric_name,
+                        metric_value,
+                        value_is_datetime,
+                        measured_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    metric.run_id,
+                    str(metric.target_table),
+                    metric.target_column,
+                    metric.metric_name,
+                    serialized_value,
+                    1 if isinstance(metric.metric_value, (datetime, date)) else 0,
+                    metric.measured_at,
+                ],
+            )
 
     def get_metrics(
         self,
@@ -249,7 +272,7 @@ class StateDAO:
             where_values += [run_id_lte]
 
         if only_successful:
-            where_clause += f" AND run_id in (select run_id from {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')} where successful)"
+            where_clause += f" AND run_id in (select run_id from {self.conn.escape_state_table(self.table_prefix, 'thorntale_run')} where successful != 0)"
 
         if target_table is not None:
             where_clause += " AND target_table = ?"
@@ -264,11 +287,14 @@ class StateDAO:
                 return dt.replace(tzinfo=timezone.utc)
             return dt
 
-        def parse_datetime(d: str) -> date | datetime:
-            if ' ' in d or 'T' in d:
-                return ensure_tz(datetime.fromisoformat(d))
+        def parse_datetime(d: str | datetime | date) -> date | datetime:
+            if isinstance(d, str):
+                if ' ' in d or 'T' in d:
+                    return ensure_tz(datetime.fromisoformat(d))
+                else:
+                    return date.fromisoformat(d)
             else:
-                return date.fromisoformat(d)
+                return d
 
         return [
             Metric(
@@ -277,7 +303,7 @@ class StateDAO:
                 row[2],
                 row[3],
                 parse_datetime(row[4]) if row[5] else json.loads(row[4]),
-                ensure_tz(datetime.fromisoformat(row[6])),
+                ensure_tz(parse_datetime(row[6])),
             )
             for row
             in self.conn.state_query(f"""

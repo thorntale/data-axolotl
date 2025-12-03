@@ -152,7 +152,7 @@ connections:
 # To point to a table in a connected database:
 state:
   connection: my_analytics_db
-  schema: analytics.axolotl  # axolotl will create it's state tables here
+  prefix: analytics.axolotl  # axolotl will create it's state tables here
 ```
 
 **TODO: add state db options**

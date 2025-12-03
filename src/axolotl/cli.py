@@ -6,6 +6,7 @@ from rich.markup import escape
 from rich.console import Console
 import time
 from importlib.metadata import version
+import itertools
 
 import typer
 from tabulate import tabulate
@@ -89,9 +90,10 @@ def run(
                             for m in conn.list_only(run_timeout):
                                 console.print(m)
                         else:
-                            for m in conn.snapshot(run_timeout):
+                            metrics_it = conn.snapshot(run_timeout)
+                            for ms in itertools.batched(metrics_it, 1_000):
                                 try:
-                                    state.record_metric(m)
+                                    state.record_metric(ms)
                                 except Exception as e:
                                     print(f"Error recording metric: {e}")
                                     print(traceback.format_exc())
