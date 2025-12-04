@@ -3,6 +3,8 @@ import json
 import re
 import traceback
 import pdb
+import pandas
+from snowflake.connector.pandas_tools import write_pandas
 
 from collections.abc import Iterator
 from typing import (
@@ -101,7 +103,10 @@ class SnowflakeConn(BaseConnection):
         params: Dict[str, Any],
     ):
         try:
-            return snowflake.connector.connect(**params, paramstyle='qmark')
+            return snowflake.connector.connect(
+                **params,
+                paramstyle='qmark',
+            )
         except Exception:
             # TODO: Don't print sensitive connection params
             console.print(
@@ -143,6 +148,41 @@ class SnowflakeConn(BaseConnection):
         with self.conn.cursor() as cur:
             result = cur.execute(query_string, data)
             return result.fetchall()
+            # print(f"{query_string=}, {data=}")
+            # l = []
+            # for r in result:
+            #     print(f"{r!r}")
+            #     l += [r]
+            # return l
+
+    @override
+    def state_bulk_upload(self, table: str, cols: List[str], data: List[List[Any]]):
+        assert self.conn
+
+        parsed = FqTable.from_string(table)
+        # write_pandas needs a correctly-cased table name, which we may not have
+        with self.conn.cursor() as cur:
+            cur.execute(f"""
+                select table_catalog, table_schema, table_name
+                from {FqTable.escape(parsed.database)}.information_schema.tables
+                where
+                    lower(table_schema) = lower(?)
+                    and lower(table_name) = lower(?)
+            """, (parsed.schema, parsed.table))
+            fq_table = FqTable(*cur.fetchone())
+
+        self.conn.cursor().execute(f"use database {FqTable.escape(fq_table.database)}")
+        self.conn.cursor().execute(f"use schema {FqTable.escape(fq_table.schema)}")
+        df = pandas.DataFrame(data, columns=cols)
+        success, num_chunks, num_rows, output = write_pandas(
+            conn=self.conn,
+            df=df,
+            database=fq_table.database,
+            schema=fq_table.schema,
+            table_name=fq_table.table,
+            # use_logical_type=True,
+        )
+        assert success
 
     @override
     def escape_state_table(self, prefix: str, table: str) -> str:
@@ -160,7 +200,7 @@ class SnowflakeConn(BaseConnection):
             ):
                 raise ValueError('')
         except Exception:
-            raise ValueError('Invalid prefix `{prefix}`. Expected prefix of the format database.schema')
+            raise ValueError(f'Invalid prefix `{prefix}`. Expected prefix of the format database.schema')
 
         return str(FqTable(
             parsed.database,

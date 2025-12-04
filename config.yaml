@@ -41,7 +41,7 @@ connections:
 #       private_key_file: "conf/rsa_key_snowflake.p8"
 #       private_key_file_pwd: "yetisson"
 #     include:
-#       - snowflake_sample_data.tpch_sf10
+#       - snowflake_sample_data.tpch_sf10.orders
 
 # state:
 #   connection: default

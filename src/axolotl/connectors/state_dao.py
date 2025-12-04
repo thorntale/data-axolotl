@@ -219,37 +219,50 @@ class StateDAO:
         )
 
     def record_metric(self, metrics: Iterable[Metric]):
-        p = self.table_prefix
-        # TODO: use batch insert for warehouses
-        for metric in metrics:
-            serialized_value = (
-                metric.metric_value.isoformat()
-                if isinstance(metric.metric_value, (datetime, date)) else
-                json.dumps(metric.metric_value)
+        # prolly important this is the same order as the table column definition
+        cols = [
+            'RUN_ID',
+            'TARGET_TABLE',
+            'TARGET_COLUMN',
+            'METRIC_NAME',
+            'METRIC_VALUE',
+            'VALUE_IS_DATETIME',
+            'MEASURED_AT',
+        ]
+        def metric_row(metric: Metric) -> List[Any]:
+            return [
+                metric.run_id,
+                str(metric.target_table),
+                metric.target_column,
+                metric.metric_name,
+                (
+                    metric.metric_value.isoformat()
+                    if isinstance(metric.metric_value, (datetime, date)) else
+                    json.dumps(metric.metric_value)
+                ),
+                1 if isinstance(metric.metric_value, (datetime, date)) else 0,
+                metric.measured_at.isoformat(),
+            ]
+
+        metrics_list = list(metrics)
+        try:
+            # try the bulk upload, then fallback to INSERT if not supported
+            self.conn.state_bulk_upload(
+                self.conn.escape_state_table(self.table_prefix, 'thorntale_metric'),
+                cols,
+                [metric_row(m) for m in metrics_list],
             )
-            self.conn.state_query(
-                f"""
-                    INSERT INTO {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')} (
-                        run_id,
-                        target_table,
-                        target_column,
-                        metric_name,
-                        metric_value,
-                        value_is_datetime,
-                        measured_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    metric.run_id,
-                    str(metric.target_table),
-                    metric.target_column,
-                    metric.metric_name,
-                    serialized_value,
-                    1 if isinstance(metric.metric_value, (datetime, date)) else 0,
-                    metric.measured_at,
-                ],
-            )
+        except NotImplementedError:
+            for metric in metrics_list:
+                self.conn.state_query(
+                    f"""
+                        INSERT INTO {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')} (
+                            {','.join(cols)}
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    metric_row(metric),
+                )
 
     def get_metrics(
         self,
@@ -310,5 +323,6 @@ class StateDAO:
                 SELECT run_id, target_table, target_column, metric_name, metric_value, value_is_datetime, measured_at
                 FROM {self.conn.escape_state_table(self.table_prefix, 'thorntale_metric')}
                 WHERE 1 = 1 {where_clause}
+                ORDER BY 1, 2, 3, 4, 5
             """, where_values)
         ]

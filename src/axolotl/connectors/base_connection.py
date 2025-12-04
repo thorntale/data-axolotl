@@ -53,6 +53,9 @@ class BaseConnection[ConfigT, ConnT]:
         """ Runs a query against the Axolotl state tables """
         raise NotImplementedError('Must define state_query in subclass')
 
+    def state_bulk_upload(self, table: str, cols: List[str], data: List[List[Any]]) -> bool:
+        raise NotImplementedError('No state_bulk_upload provided')
+
     def escape_state_table(self, prefix: str, table: str) -> str:
         """ Makes a prefix + table name safe for insertion into a sql
         query. Prefix is a raw string taken from the config file. """

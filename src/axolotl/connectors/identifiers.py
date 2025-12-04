@@ -37,14 +37,20 @@ class FqTable(NamedTuple):
 
     def __str__(self):
         return '.'.join(
-            p if re.match(r'[a-zA-Z_][a-zA-Z0-9_]*', p)
-            else '"' + p.replace('"', '""') + '"'
+            FqTable.escape(p)
             for p in [
                 self.database,
                 self.schema,
                 self.table,
             ]
         )
+
+    @staticmethod
+    def escape(ident: str) -> str:
+        if re.match(r'[a-zA-Z_][a-zA-Z0-9_]*', ident):
+            return ident
+        else:
+            return '"' + ident.replace('"', '""') + '"'
 
     @staticmethod
     def from_string(v: str) -> FqTable:

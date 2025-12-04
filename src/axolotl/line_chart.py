@@ -287,10 +287,13 @@ class Chart:
         return f"{round(value)}{suffix}"
 
 def frange(start, end, step):
-    v = start
-    while v < end:
-        yield v
-        v += step
+    assert step > 0
+    n = 0
+    # adding step directly to start causes precision issues when start >> step
+    # so instead we use n
+    while start + step * n < end:
+        yield start + step * n
+        n += 1
 
 def arr_to_dots(arr):
     def normalized_bottom_to_unicode(a, b):

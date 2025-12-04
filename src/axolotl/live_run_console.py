@@ -4,6 +4,8 @@ from collections import Counter
 
 from rich.live import Live
 from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from .metric_query import MetricQuery, QueryStatus
 
@@ -32,11 +34,22 @@ class LiveConsole:
         in_progress: List[MetricQuery],
     ):
         if in_progress:
+            # use a table so we wrap each individual line
+            table = Table(box=None, show_header=False, expand=True)
+            table.add_column("", no_wrap=True, overflow="ellipsis")
+            for q in sorted(in_progress, key=lambda m: m.timeout_at):
+                table.add_row(
+                    Text.from_markup(
+                        f"[dim]#{q.query_id}[/dim] "
+                        f"[blue]{q.query_detail}[/blue] "
+                        f"{q.fq_table_name} {q.column_name}"
+                    )
+                )
+            for _ in range(max(0, 10 - len(in_progress))):
+                table.add_row("")
+
             self.rich_live.update(Panel(
-                renderable="\n".join(
-                    f"[dim]#{q.query_id}[/dim] [blue]{q.query_detail}[/blue] {q.column_name}"
-                    for q in sorted(in_progress, key=lambda m: m.timeout_at)
-                ) + ('\n' * (10 - len(in_progress))),
+                renderable=table,
                 title_align="left",
                 subtitle_align="left",
                 title=f"In Progress ({len(in_progress)})",
