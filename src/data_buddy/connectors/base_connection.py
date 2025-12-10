@@ -4,7 +4,7 @@ from rich.console import Console
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ..config import AxolotlConfig
+    from ..config import DataBuddyConfig
 from ..live_run_console import LiveConsole
 from ..timeouts import Timeout
 
@@ -18,12 +18,12 @@ class BaseConnection[ConfigT, ConnT]:
 
     def __init__(
         self,
-        axolotl_config: AxolotlConfig,
+        data_buddy_config: DataBuddyConfig,
         connection_config: ConfigT,
         run_id: int,
         console: Console | LiveConsole = Console(),
     ):
-        self.axolotl_config = axolotl_config
+        self.data_buddy_config = data_buddy_config
         self.connection_config = connection_config
         self.run_id = run_id
         self.console = console
@@ -50,7 +50,7 @@ class BaseConnection[ConfigT, ConnT]:
         raise NotImplementedError('Must define list_only in subclass')
 
     def state_query(self, query_string: str, data: List[Any] = []) -> List[List[Any]]:
-        """ Runs a query against the Axolotl state tables """
+        """ Runs a query against the DataBuddy state tables """
         raise NotImplementedError('Must define state_query in subclass')
 
     def state_bulk_upload(self, table: str, cols: List[str], data: List[List[Any]]) -> bool:

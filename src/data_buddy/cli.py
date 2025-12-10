@@ -20,7 +20,7 @@ from .live_run_console import live_run_console
 from .generate_config_interactive import generate_config_interactive
 from .timeouts import Timeout
 from .trackers import AlertSeverity
-from .config import AxolotlConfig
+from .config import DataBuddyConfig
 from . import api
 
 
@@ -28,7 +28,7 @@ app = typer.Typer()
 
 def version_callback(value: bool):
     if value:
-        typer.echo(version('axolotl'))
+        typer.echo(version('data-buddy'))
         raise typer.Exit()
 
 @app.callback()
@@ -42,7 +42,7 @@ def version_arg(
 ):
     pass
 
-def _get_config_from_path(config_path: Optional[Path]) -> AxolotlConfig:
+def _get_config_from_path(config_path: Optional[Path]) -> DataBuddyConfig:
     console = Console()
 
     if not config_path:

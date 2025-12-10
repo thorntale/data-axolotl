@@ -1,6 +1,6 @@
-"""Configuration parser for Axolotl.
+"""Configuration parser for DataBuddy.
 
-Reads YAML configuration files and produces AxolotlConfig objects.
+Reads YAML configuration files and produces DataBuddyConfig objects.
 Supports environment variable substitution using $ENVVAR syntax.
 """
 
@@ -23,7 +23,7 @@ from .connectors.state_dao import StateDAO
 
 
 class BaseConnectionConfig(BaseModel):
-    axolotl_config: AxolotlConfig
+    data_buddy_config: DataBuddyConfig
 
     name: str
     type: str
@@ -334,7 +334,7 @@ class SnowflakeConnectionConfig(BaseConnectionConfig):
         return self
 
     def get_conn(self, run_id: int, console: Console) -> BaseConnection[BaseConnectionConfig, Any]:
-        return SnowflakeConn(self.axolotl_config, self, run_id, console)
+        return SnowflakeConn(self.data_buddy_config, self, run_id, console)
 
 
 class SqliteConnectionConfig(BaseConnectionConfig):
@@ -342,7 +342,7 @@ class SqliteConnectionConfig(BaseConnectionConfig):
     path: str = "./local.db"
 
     def get_conn(self, run_id: int, console: Console) -> BaseConnection[BaseConnectionConfig, Any]:
-        return SqliteConn(self.axolotl_config, self, run_id, console)
+        return SqliteConn(self.data_buddy_config, self, run_id, console)
 
 
 class StateConfig(BaseModel):
@@ -350,8 +350,8 @@ class StateConfig(BaseModel):
     prefix: str
 
 
-class AxolotlConfig(BaseModel):
-    """Top-level configuration for Axolotl."""
+class DataBuddyConfig(BaseModel):
+    """Top-level configuration for DataBuddy."""
     max_threads: int = 10
     run_timeout_seconds: int = 600
     connection_timeout_seconds: int = 600
@@ -370,7 +370,7 @@ class AxolotlConfig(BaseModel):
         if isinstance(self.state, str):
             sqlite_config = SqliteConnectionConfig(
                 name="local_state",
-                axolotl_config=self,
+                data_buddy_config=self,
                 params={'path': self.state},
             )
             with sqlite_config.get_conn(run_id, console) as conn:
@@ -414,15 +414,15 @@ def _substitute_env_vars(value: Any) -> Any:
         return value
 
 
-def parse_config(config_path: str | Path) -> AxolotlConfig:
+def parse_config(config_path: str | Path) -> DataBuddyConfig:
     """
-    Parse a YAML configuration file to an AxolotlConfig.
+    Parse a YAML configuration file to an DataBuddyConfig.
 
     Args:
         config_path: Path to the config
 
     Returns:
-        AxolotlConfig
+        DataBuddyConfig
 
     Raises:
         FileNotFoundError: If the configuration file doesn't exist
@@ -443,10 +443,10 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
     return config_from_dict(config)
 
 
-def config_from_dict(config: Dict) -> AxolotlConfig:
+def config_from_dict(config: Dict) -> DataBuddyConfig:
     connections: Dict[str, BaseConnectionConfig] = {}
 
-    axolotl_config = AxolotlConfig(
+    data_buddy_config = DataBuddyConfig(
         **{
             k: v
             for k, v in config.items()
@@ -467,14 +467,14 @@ def config_from_dict(config: Dict) -> AxolotlConfig:
                 'include': parse_include_list(conn_config.get("include", None)),
                 'exclude': parse_include_list(conn_config.get("exclude", [])),
             }
-            axolotl_config.connections[conn_name] = SnowflakeConnectionConfig(
+            data_buddy_config.connections[conn_name] = SnowflakeConnectionConfig(
                 **opts,
-                axolotl_config=axolotl_config,
+                data_buddy_config=data_buddy_config,
             )
         else:
             raise ValueError(f"Invalid connection type {conn_type}")
 
-    return axolotl_config
+    return data_buddy_config
 
 def parse_include_list(items: List[str] | None) -> List[IncludeDirective] | None:
     if items is None:
@@ -487,7 +487,7 @@ def parse_include_list(items: List[str] | None) -> List[IncludeDirective] | None
         for item in items
     ]
 
-def load_config(config_path: str | Path = "config.yaml") -> AxolotlConfig:
+def load_config(config_path: str | Path = "config.yaml") -> DataBuddyConfig:
     """
     Load configuration from a file with a convenient default path.
 
@@ -498,6 +498,6 @@ def load_config(config_path: str | Path = "config.yaml") -> AxolotlConfig:
         config_path: Path to the YAML configuration file (default: "conf/config.yaml")
 
     Returns:
-        AxolotlConfig object containing all parsed configuration
+        DataBuddyConfig object containing all parsed configuration
     """
     return parse_config(config_path)

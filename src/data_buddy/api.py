@@ -12,7 +12,7 @@ from .alert_report import AlertReport
 from .config import load_config, config_from_dict
 from .connectors.identifiers import IncludeDirective
 from .trackers import AlertSeverity
-from .config import AxolotlConfig
+from .config import DataBuddyConfig
 from .connectors.state_dao import Run
 from .trackers import MetricAlert
 from .timeouts import Timeout
@@ -22,9 +22,9 @@ type RunId = Annotated[int, "run id"]
 
 
 def _parse_any_config(
-    config: Path | Dict[str, Any] | str | AxolotlConfig | None,
-) -> AxolotlConfig:
-    if isinstance(config, AxolotlConfig):
+    config: Path | Dict[str, Any] | str | DataBuddyConfig | None,
+) -> DataBuddyConfig:
+    if isinstance(config, DataBuddyConfig):
         return config
 
     if config is None or config == "":
@@ -41,10 +41,10 @@ def _parse_any_config(
 
 
 def run(
-    config: Path | Dict[str, Any] | str | AxolotlConfig | None,
+    config: Path | Dict[str, Any] | str | DataBuddyConfig | None,
     list_only: Optional[bool] = False,
 ):
-    """ Run axolotl with the given config.
+    """ Run data-buddy with the given config.
     Raises an error if anything goes wrong.
     """
     config = _parse_any_config(config)
@@ -72,7 +72,7 @@ def run(
                                     raise
 
 def list_runs(
-    config: Path | Dict[str, Any] | str | AxolotlConfig | None,
+    config: Path | Dict[str, Any] | str | DataBuddyConfig | None,
 ) -> List[Run]:
     """ Returns a list of Run objects.
     Each Run has the following properties:
@@ -86,7 +86,7 @@ def list_runs(
         return sorted(state.get_all_runs(), key=lambda r: r.run_id)
 
 def rm_run(
-    config: Path | Dict[str, Any] | str | AxolotlConfig | None,
+    config: Path | Dict[str, Any] | str | DataBuddyConfig | None,
     run_id: RunId,
 ) -> bool:
     """ Remove a run with the given id. Returns true if successful, false if the
@@ -102,7 +102,7 @@ def rm_run(
             return False
 
 def get_alerts(
-    config: Path | Dict[str, Any] | str | AxolotlConfig | None,
+    config: Path | Dict[str, Any] | str | DataBuddyConfig | None,
     target: Optional[List[str]] = None,
     run_id: Optional[RunId] = None,
     level: Set[AlertSeverity] = { AlertSeverity.Major, AlertSeverity.Minor },
@@ -114,7 +114,7 @@ def get_alerts(
     return AlertReport(metric_set).get_items(level)
 
 def get_metrics(
-    config: Path | Dict[str, Any] | str | AxolotlConfig | None,
+    config: Path | Dict[str, Any] | str | DataBuddyConfig | None,
     run_id: Optional[int] = None,
     include: Optional[List[str] | List[IncludeDirective]] = None,
 ) -> MetricSet:

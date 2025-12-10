@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "axolotl"
+name = "data-buddy"
 dynamic = ["version"]
 description = ''
 readme = "README.md"
@@ -38,18 +38,18 @@ dependencies = [
 ]
 
 [project.scripts]
-axolotl = "axolotl.cli:main"
+data-buddy = "data_buddy.cli:main"
 
 [project.urls]
-Documentation = "https://github.com/thorntale/axolotl#readme"
-Issues = "https://github.com/thorntale/axolotl/issues"
-Source = "https://github.com/thorntale/axolotl"
+Documentation = "https://github.com/thorntale/data-buddy#readme"
+Issues = "https://github.com/thorntale/data-buddy/issues"
+Source = "https://github.com/thorntale/data-buddy"
 
 [tool.hatch.version]
-path = "src/axolotl/__about__.py"
+path = "src/data_buddy/__about__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/axolotl"]
+packages = ["src/data_buddy"]
 
 [tool.hatch.envs.types]
 extra-dependencies = [
@@ -57,19 +57,19 @@ extra-dependencies = [
   "pytest",
 ]
 [tool.hatch.envs.types.scripts]
-check = "mypy --install-types --non-interactive {args:src/axolotl tests}"
+check = "mypy --install-types --non-interactive {args:src/data_buddy tests}"
 
 [tool.coverage.run]
-source_pkgs = ["axolotl", "tests"]
+source_pkgs = ["data-buddy", "tests"]
 branch = true
 parallel = true
 omit = [
-  "src/axolotl/__about__.py",
+  "src/data_buddy/__about__.py",
 ]
 
 [tool.coverage.paths]
-axolotl = ["src/axolotl", "*/axolotl/src/axolotl"]
-tests = ["tests", "*/axolotl/tests"]
+data-buddy = ["src/data_buddy", "*/data-buddy/src/data_buddy"]
+tests = ["tests", "*/data-buddy/tests"]
 
 [tool.coverage.report]
 exclude_lines = [

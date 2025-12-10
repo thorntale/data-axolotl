@@ -20,7 +20,7 @@ def generate_config_interactive(config_path: Path) -> bool:
     """ Returns True if the config was generated successfully. """
     console = Console()
 
-    console.print("Welcome to interactive config setup! This script will walk you through setting up your axolotl config file.")
+    console.print("Welcome to interactive config setup! This script will walk you through setting up your data buddy config file.")
 
     db_type = multiple_choice('What type of database do you want to connect?', {
         'snowflake': ('Snowflake', ''),

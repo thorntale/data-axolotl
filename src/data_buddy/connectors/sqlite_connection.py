@@ -19,7 +19,7 @@ class SqliteConn(BaseConnection):
         pass
 
     def state_query(self, query_string: str, data: List[Any] = []) -> List[List[Any]]:
-        """ Runs a query against the Axolotl state tables """
+        """ Runs a query against the DataBuddy state tables """
         assert self.conn
         cur = self.conn.cursor()
         result = cur.execute(query_string, data)
