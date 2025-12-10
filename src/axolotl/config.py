@@ -440,8 +440,10 @@ def parse_config(config_path: str | Path) -> AxolotlConfig:
 
     # Substitute environment variables throughout the config
     config = _substitute_env_vars(raw_config)
+    return config_from_dict(config)
 
-    # TODO: later, support conn types that aren't snowflake
+
+def config_from_dict(config: Dict) -> AxolotlConfig:
     connections: Dict[str, BaseConnectionConfig] = {}
 
     axolotl_config = AxolotlConfig(

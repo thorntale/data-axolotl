@@ -23,6 +23,13 @@ class AlertReport:
     def __init__(self, metric_set):
         self.metric_set = metric_set
 
+    def get_items(self, level: Set[AlertSeverity]) -> List[MetricAlert]:
+        return [
+            a
+            for a in self.metric_set.get_all_alerts()
+            if a.severity in level
+        ]
+
     def print(
         self,
         save_path: Optional[Path],

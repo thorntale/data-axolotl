@@ -7,6 +7,7 @@ from typing import Optional
 from typing import NamedTuple
 from typing import Self
 from typing import Iterator
+from typing import cast
 from datetime import datetime, date
 from datetime import timezone
 from contextlib import contextmanager
@@ -192,7 +193,7 @@ class StateDAO:
         return [
             Run(
                 row[0],
-                parse_dt(row[1]),
+                cast(datetime, parse_dt(row[1])),
                 parse_dt(row[2]),
                 None if row[3] is None else False if row[3] == 0 else True,
             )

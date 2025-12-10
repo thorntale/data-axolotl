@@ -5,3 +5,4 @@ conf/*p8
 conf/*pub
 axolotl.sublime-workspace
 .env.local
+dist

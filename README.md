@@ -71,12 +71,39 @@ axolotl history database.schema.table
 ```
 
 ## Via API
-**TODO**
+A number of commands are available to run directly from python, facilitating use via Airflow or other tools.
 
+```py
+""" Perform a run using the specified config. You can provide either a path
+to the config, or the config values in the form of dictionaries. """
+def run(config: Path | Dict)
 
-## In Airflow
-**TODO**
+""" Get information about past runs """
+def list_runs(config: Path | Dict) -> List[Run]
 
+""" Remove a past run """
+def rm_run(config: Path | Dict, run_id: int)
+
+""" Get a list of alerts from a run """
+def get_alerts(
+    config: Path | Dict,
+
+    # Target can be used to provide a list of filters. These work the same way
+    # as the config's `include`
+    target: Optional[List[str]] = None,
+
+    # If you don't specify a run id, the latest successful run is used
+    run_id: Optional[int] = None,
+
+    # Which levels of alerts you want to receive.
+    # Available levels are:
+    # - 'Major'
+    # - 'Minor'
+    # - 'Changed'
+    # - 'Unchanged'
+    level: Set[AlertSeverity] = { 'Major', 'Minor' },
+) -> List[MetricAlert]
+```
 
 # Configuration
 When run as a cli command, Axolotl reads its configuration from a config file. The default config location is `config.yaml` in the current working directory. You can also specify a config file via the cli `--config-path [path]` argument.
@@ -154,8 +181,6 @@ state:
   connection: my_analytics_db
   prefix: analytics.axolotl  # axolotl will create it's state tables here
 ```
-
-**TODO: add state db options**
 
 ## Connection Params
 Each type of connection takes a different set of `params`, specific to that type of database.
