@@ -26,7 +26,7 @@ Axolotl has a simple api, and works with Airflow or cron. Run Axolotl daily and 
 - **Simple Setup**  Don't waste time configuring metrics. You can run your first monitoring job locally in minutes, and setting up a full production schedule doesn't take much longer.
 - **Run on Prem**  Run Axolotl on your own infra. You shouldn't need to vet a new cloud provider just to monitor your data.
 
-**TODO: screenshot of Axolotl alerts in slack/terminal**
+![Axolotl alerts screenshot](./axolotl-alerts.png)
 
 -----
 
