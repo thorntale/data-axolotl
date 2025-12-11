@@ -1,73 +1,73 @@
-# Data Buddy
+# Data Axolotl
 
-[![PyPI - Version](https://img.shields.io/pypi/v/data-buddy.svg)](https://pypi.org/project/data-buddy)
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/data-buddy.svg)](https://pypi.org/project/data-buddy)
+[![PyPI - Version](https://img.shields.io/pypi/v/data-axolotl.svg)](https://pypi.org/project/data-axolotl)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/data-axolotl.svg)](https://pypi.org/project/data-axolotl)
 
-Data Buddy is a data monitoring tool for catching unexpected breaking changes in analytics data sets. Unlike other tools, which require you to know in advance what might break, Data Buddy intelligenlty monitors eveything by default.
+Data Axolotl is a data monitoring tool for catching unexpected breaking changes in analytics data sets. Unlike other tools, which require you to know in advance what might break, Data Axolotl intelligenlty monitors eveything by default.
 
-Data Buddy has a simple api, and works with Airflow or cron. Run Data Buddy daily and get a summary of changes sent straight to Slack.
+Data Axolotl has a simple api, and works with Airflow or cron. Run Data Axolotl daily and get a summary of changes sent straight to Slack.
 
-### What kind of issues does Data Buddy monitor for?
+### What kind of issues does Data Axolotl monitor for?
 - **Uniqueness**  A column used to be filled with unique values and now contains duplicates? You might want to know.
 - **Distinct Count**  A three-valued enum now has four values? Let's check that.
 - **Numeric Range**  The maximum date went from today to 2399-03-14? Oh no.
-- **Schema Changes**  Someone removed a column but didn't tell you? Data Buddy will.
+- **Schema Changes**  Someone removed a column but didn't tell you? Data Axolotl will.
 - **Table Size**  Your 100 byte table is not 100 megabytes? Alert!
 - ...and [much more](#list-of-metrics).
 
-### What is Data Buddy not?
+### What is Data Axolotl not?
 - **Not** a test suite
 - **Not** for monitoring business metrics, like Signup Rates or CAC.
 - **Not** a statistical analysis tool
 
-### Why Data Buddy?
+### Why Data Axolotl?
 - **Monitor Everything Automatically**  Writing tests is great (keep it up!) but you can only test what you think to test for.
-- **Track Historical State**  If you just noticed a table growing unexpectedly, but don't know when it started, a simple `data-buddy report [table]` can show you historical trends and help you pinpoint issues.
+- **Track Historical State**  If you just noticed a table growing unexpectedly, but don't know when it started, a simple `data-axolotl report [table]` can show you historical trends and help you pinpoint issues.
 - **Simple Setup**  Don't waste time configuring metrics. You can run your first monitoring job locally in minutes, and setting up a full production schedule doesn't take much longer.
-- **Run on Prem**  Run Data Buddy on your own infra. You shouldn't need to vet a new cloud provider just to monitor your data.
+- **Run on Prem**  Run Data Axolotl on your own infra. You shouldn't need to vet a new cloud provider just to monitor your data.
 
-![Data Buddy alerts screenshot](./data-buddy-alerts.png)
+![Data Axolotl alerts screenshot](./data-axolotl-alerts.png)
 
 -----
 
 # Usage
-The simplest way to try out Data Buddy is from your local computer via the cli command. For production deployments, see the [Usage with Airflow](#usage-with-airflow) or [Usage via API](#usage-via-api) guides below.
+The simplest way to try out Data Axolotl is from your local computer via the cli command. For production deployments, see the [Usage with Airflow](#usage-with-airflow) or [Usage via API](#usage-via-api) guides below.
 
 
 ## Locally
-1. First, install data-buddy via pip. (You can also install Data Buddy inside a [virtual environment](https://docs.python.org/3/tutorial/venv.html))
+1. First, install data-axolotl via pip. (You can also install Data Axolotl inside a [virtual environment](https://docs.python.org/3/tutorial/venv.html))
 
 ```sh
-pip install data-buddy
+pip install data-axolotl
 ```
 
 2. Verify it was installed successfully by running
 ```sh
-data-buddy --version
+data-axolotl --version
 ```
 
-3. Create your configuration by following the [Configuration section](#configuration) below, or alternatively, run `data-buddy run` to let the interactive setup helper walk you through setup.
+3. Create your configuration by following the [Configuration section](#configuration) below, or alternatively, run `data-axolotl run` to let the interactive setup helper walk you through setup.
 
 4. Run your monitoring job
 ```sh
-data-buddy run
+data-axolotl run
 ```
 
 5. Wait a bit for data to change, then run again.
 ```sh
-data-buddy run
+data-axolotl run
 ```
 
 6. View your first report
 ```sh
 # you can view only alerts using
-data-buddy alerts
+data-axolotl alerts
 # include --all to show all levels of alerts, including unchanged metrics.
-data-buddy alerts --all
+data-axolotl alerts --all
 # to view historical data, run
-data-buddy history
+data-axolotl history
 # you can also filter for a specific table
-data-buddy history database.schema.table
+data-axolotl history database.schema.table
 ```
 
 ## Via API
@@ -106,18 +106,18 @@ def get_alerts(
 ```
 
 # Configuration
-When run as a cli command, Data Buddy reads its configuration from a config file. The default config location is `config.yaml` in the current working directory. You can also specify a config file via the cli `--config-path [path]` argument.
+When run as a cli command, Data Axolotl reads its configuration from a config file. The default config location is `config.yaml` in the current working directory. You can also specify a config file via the cli `--config-path [path]` argument.
 
 When running via the python api, such as with airflow, **TODO: how to pass config?**.
 
 A description of config.yaml is below.
 
-Note that Data Buddy performs env var substitution on the config.yaml, so you can always pass in sensitive details via environment variables. Ex: `password: $SNOWFLAKE_PASSWORD`.
+Note that Data Axolotl performs env var substitution on the config.yaml, so you can always pass in sensitive details via environment variables. Ex: `password: $SNOWFLAKE_PASSWORD`.
 
 ```yaml
 # config.yaml
 ---
-# The maximum number of queries data-buddy will run in parallel. Default 10.
+# The maximum number of queries data-axolotl will run in parallel. Default 10.
 max_threads: 10
 
 # The timeout of the entire run. Default 600 (10 minutes).
@@ -150,8 +150,8 @@ connections:
       - warehouse: compute-1
       - password: $SNOWFLAKE_PASSWORD
 
-    # include and exclude specify which objects Data Buddy will monitor.
-    # By default, Data Buddy monitors all objects (excluding system objects).
+    # include and exclude specify which objects Data Axolotl will monitor.
+    # By default, Data Axolotl monitors all objects (excluding system objects).
     # You can list objects in the following formats:
     # - database
     # - database.schema
@@ -179,7 +179,7 @@ connections:
 # To point to a table in a connected database:
 state:
   connection: my_analytics_db
-  prefix: analytics.data-buddy  # data-buddy will create it's state tables here
+  prefix: analytics.data-axolotl  # data-axolotl will create it's state tables here
 ```
 
 ## Connection Params
@@ -214,9 +214,9 @@ password: "<your password>"
 ```
 
 ## State Storage
-By default, data-buddy stores its state in a local SQLite database, `./local.db`. State is used to generate alerts by tracking changes between runs. You can override where state is stored via the [config](#configuration).
+By default, data-axolotl stores its state in a local SQLite database, `./local.db`. State is used to generate alerts by tracking changes between runs. You can override where state is stored via the [config](#configuration).
 
-A common pattern is to store state alongside the data you're monitoring, in a dedicated `data-buddy` table. An example of this is shown in the [configuration section](#configuration).
+A common pattern is to store state alongside the data you're monitoring, in a dedicated `data-axolotl` table. An example of this is shown in the [configuration section](#configuration).
 
 If you want to store state in a connection you don't monitor, for instance to use a different database type or connection params, see the example below.
 
@@ -228,14 +228,14 @@ connections:
     include: []  # don't monitor anything
 state:
   connection: state_db
-  prefix: db.data-buddy
+  prefix: db.data-axolotl
 ```
 
-For production deployments, it's often useful to have a local config pointing at your production state db. That way, you can run `data-buddy history` locally, but view production metrics. Your local connection could also use a read-only role for added safety.
+For production deployments, it's often useful to have a local config pointing at your production state db. That way, you can run `data-axolotl history` locally, but view production metrics. Your local connection could also use a read-only role for added safety.
 
 
 # Reading Alerts
-You can run `data-buddy alerts` to get a list of alerts: what changed between this run and the last. By default, this command only shows Major and Minor alerts. You can pass `--changed` to include all changes, or `--all` to explicitly list unchanged metrics as well.
+You can run `data-axolotl alerts` to get a list of alerts: what changed between this run and the last. By default, this command only shows Major and Minor alerts. You can pass `--changed` to include all changes, or `--all` to explicitly list unchanged metrics as well.
 
 Take this example of some alerts from the `dim_user` table.
 ```
@@ -255,7 +255,7 @@ Each alert shows:
 * The alerting strategy, and change amount.
 
 ## Alerting Strategies
-Data Buddy employs a few different alerting strategies depending on the metric type and available historical data.
+Data Axolotl employs a few different alerting strategies depending on the metric type and available historical data.
 
 - **Binary Changed/Unchanged `(==)`, `(!=)`**  The simplest strategy used for metric that we don't expect to change, e.g. column type.
 - **Tracked Status**  When we first see a table/column, or when a table/column goes away.
@@ -301,18 +301,18 @@ Data Buddy employs a few different alerting strategies depending on the metric t
 
 
 # Development
-Most users of data-buddy won't need to follow the steps in this section. For only using Data Buddy, just follow the guides above. However, if you're looking to make changes or contribute code, follow the guide below.
+Most users of data-axolotl won't need to follow the steps in this section. For only using Data Axolotl, just follow the guides above. However, if you're looking to make changes or contribute code, follow the guide below.
 
-Data Buddy manages its dev environment with [Hatch](https://hatch.pypa.io/). Follow their [installation guide](https://hatch.pypa.io/latest/install/) to get set up on your system.
+Data Axolotl manages its dev environment with [Hatch](https://hatch.pypa.io/). Follow their [installation guide](https://hatch.pypa.io/latest/install/) to get set up on your system.
 
-Once hatch is installed, you can run data-buddy as follows.
+Once hatch is installed, you can run data-axolotl as follows.
 
 ```sh
-hatch run data-buddy [args]
+hatch run data-axolotl [args]
 ```
 
 You can add dependencies in `pyproject.toml`, which will be auto updated whenever you do `hatch run`.
 
 
 # License
-`data-buddy` is distributed under the terms of the [MIT](https://spdx.org/licenses/MIT.html) license.
+`data-axolotl` is distributed under the terms of the [MIT](https://spdx.org/licenses/MIT.html) license.

@@ -27,7 +27,7 @@ from rich.console import Console
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ..config import DataBuddyConfig, SnowflakeConnectionConfig
+    from ..config import DataAxolotlConfig, SnowflakeConnectionConfig
 from ..connectors.state_dao import Metric
 from .identifiers import FqTable
 from ..live_run_console import LiveConsole
@@ -56,7 +56,7 @@ class SnowflakeConn(BaseConnection):
 
     def __init__(
         self,
-        data_buddy_config: DataBuddyConfig,
+        data_axolotl_config: DataAxolotlConfig,
         connection_config: SnowflakeConnectionConfig,
         run_id: int,
         console: Console | LiveConsole = Console(),
@@ -65,35 +65,35 @@ class SnowflakeConn(BaseConnection):
         Initialize a Snowflake connection.
 
         Args:
-            config: DataBuddyConfig object containing all configuration
+            config: DataAxolotlConfig object containing all configuration
             connection_name: Name of the connection to use from config.connections
             run_id: Unique identifier for this snapshot run
         """
         super().__init__(
-            data_buddy_config,
+            data_axolotl_config,
             connection_config,
             run_id,
             console,
         )
 
-        self.max_threads = connection_config.max_threads or data_buddy_config.max_threads
+        self.max_threads = connection_config.max_threads or data_axolotl_config.max_threads
         self.conn_timeout = Timeout(
             timeout_seconds=connection_config.connection_timeout_seconds
-            or data_buddy_config.connection_timeout_seconds,
+            or data_axolotl_config.connection_timeout_seconds,
             detail=f"connection:{connection_config.name}",
         )
         self.per_query_timeout_seconds = (
-            connection_config.query_timeout_seconds or data_buddy_config.query_timeout_seconds
+            connection_config.query_timeout_seconds or data_axolotl_config.query_timeout_seconds
         )
         self.exclude_expensive_queries = (
             connection_config.exclude_expensive_queries
             if connection_config.exclude_expensive_queries is not None
-            else data_buddy_config.exclude_expensive_queries
+            else data_axolotl_config.exclude_expensive_queries
         )
         self.exclude_complex_queries = (
             connection_config.exclude_complex_queries
             if connection_config.exclude_complex_queries is not None
-            else data_buddy_config.exclude_complex_queries
+            else data_axolotl_config.exclude_complex_queries
         )
 
     @override
