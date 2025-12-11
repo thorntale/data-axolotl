@@ -6,3 +6,4 @@ conf/*pub
 *.sublime-workspace
 .env.local
 dist
+.DS_Store

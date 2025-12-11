@@ -3,9 +3,11 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/data-axolotl.svg)](https://pypi.org/project/data-axolotl)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/data-axolotl.svg)](https://pypi.org/project/data-axolotl)
 
-Data Axolotl is a data monitoring tool for catching unexpected breaking changes in analytics data sets. Unlike other tools, which require you to know in advance what might break, Data Axolotl intelligenlty monitors eveything by default.
+Data Axolotl is a data monitoring tool for catching unexpected breaking changes in analytics data sets. Unlike other tools, which require you to know in advance what might break, Data Axolotl intelligenlty monitors _eveything_ by default.
 
-Data Axolotl has a simple api, and works with Airflow or cron. Run Data Axolotl daily and get a summary of changes sent straight to Slack.
+Data Axolotl has a simple api, and works with Airflow or cron. Run Data Axolotl daily and send a summary of changes straight to Slack!
+
+![Data Axolotl alerts screenshot](./data-axolotl-alerts.png)
 
 ### What kind of issues does Data Axolotl monitor for?
 - **Uniqueness**  A column used to be filled with unique values and now contains duplicates? You might want to know.
@@ -16,22 +18,22 @@ Data Axolotl has a simple api, and works with Airflow or cron. Run Data Axolotl 
 - ...and [much more](#list-of-metrics).
 
 ### What is Data Axolotl not?
-- **Not** a test suite
+- **Not** a test suite.
 - **Not** for monitoring business metrics, like Signup Rates or CAC.
-- **Not** a statistical analysis tool
+- **Not** a statistical analysis tool.
 
 ### Why Data Axolotl?
 - **Monitor Everything Automatically**  Writing tests is great (keep it up!) but you can only test what you think to test for.
 - **Track Historical State**  If you just noticed a table growing unexpectedly, but don't know when it started, a simple `data-axolotl report [table]` can show you historical trends and help you pinpoint issues.
 - **Simple Setup**  Don't waste time configuring metrics. You can run your first monitoring job locally in minutes, and setting up a full production schedule doesn't take much longer.
-- **Run on Prem**  Run Data Axolotl on your own infra. You shouldn't need to vet a new cloud provider just to monitor your data.
+- **On Prem**  Run Data Axolotl on your own infra. You shouldn't need to vet a new cloud provider just to monitor your data.
 
-![Data Axolotl alerts screenshot](./data-axolotl-alerts.png)
+![Data Axolotl history screenshot](./data-axolotl-history.png)
 
 -----
 
 # Usage
-The simplest way to try out Data Axolotl is from your local computer via the cli command. For production deployments, see the [Usage with Airflow](#usage-with-airflow) or [Usage via API](#usage-via-api) guides below.
+The simplest way to try out Data Axolotl is from your local computer via the cli command. For production deployments, see the [Usage via API](#usage-via-api) guide below.
 
 
 ## Locally
@@ -48,7 +50,7 @@ data-axolotl --version
 
 3. Create your configuration by following the [Configuration section](#configuration) below, or alternatively, run `data-axolotl run` to let the interactive setup helper walk you through setup.
 
-4. Run your monitoring job
+4. Run your first monitoring job
 ```sh
 data-axolotl run
 ```
@@ -70,21 +72,23 @@ data-axolotl history
 data-axolotl history database.schema.table
 ```
 
+The first report may over-alert, since Data Axolotl hasn't yet learned what "normal" looks like for your data, but fasle positives should decrease once you've built up a larger history.
+
 ## Via API
 A number of commands are available to run directly from python, facilitating use via Airflow or other tools.
 
 ```py
-""" Perform a run using the specified config. You can provide either a path
-to the config, or the config values in the form of dictionaries. """
+# Perform a run using the specified config. You can provide either a path
+# to the config, or the config values in the form of a dictionary.
 def run(config: Path | Dict)
 
-""" Get information about past runs """
+# Get information about past runs
 def list_runs(config: Path | Dict) -> List[Run]
 
-""" Remove a past run """
+# Remove a past run
 def rm_run(config: Path | Dict, run_id: int)
 
-""" Get a list of alerts from a run """
+# Get a list of alerts from a run
 def get_alerts(
     config: Path | Dict,
 
@@ -96,11 +100,7 @@ def get_alerts(
     run_id: Optional[int] = None,
 
     # Which levels of alerts you want to receive.
-    # Available levels are:
-    # - 'Major'
-    # - 'Minor'
-    # - 'Changed'
-    # - 'Unchanged'
+    # Available levels are: Major, Minor, Changed, Unchanged.
     level: Set[AlertSeverity] = { 'Major', 'Minor' },
 ) -> List[MetricAlert]
 ```
@@ -108,11 +108,11 @@ def get_alerts(
 # Configuration
 When run as a cli command, Data Axolotl reads its configuration from a config file. The default config location is `config.yaml` in the current working directory. You can also specify a config file via the cli `--config-path [path]` argument.
 
-When running via the python api, such as with airflow, **TODO: how to pass config?**.
+When running via the python api, such as with airflow, you can pass the same values in as a dictionary.
 
 A description of config.yaml is below.
 
-Note that Data Axolotl performs env var substitution on the config.yaml, so you can always pass in sensitive details via environment variables. Ex: `password: $SNOWFLAKE_PASSWORD`.
+Note that Data Axolotl performs env var substitution on the config.yaml, so you can always pass in sensitive details via environment variables. Ex: `password: $SNOWFLAKE_PASSWORD`. (Substitution is not performed when calling via the python api.)
 
 ```yaml
 # config.yaml
@@ -179,7 +179,7 @@ connections:
 # To point to a table in a connected database:
 state:
   connection: my_analytics_db
-  prefix: analytics.data-axolotl  # data-axolotl will create it's state tables here
+  prefix: analytics.data-axolotl  # data-axolotl will create its state tables here
 ```
 
 ## Connection Params
@@ -213,22 +213,27 @@ For password authentication:
 password: "<your password>"
 ```
 
-## State Storage
-By default, data-axolotl stores its state in a local SQLite database, `./local.db`. State is used to generate alerts by tracking changes between runs. You can override where state is stored via the [config](#configuration).
+### Other Databases
+Unfortunately, Data Axolotl only supports Snowflake (for now). If you have another database type you want support for, open an issue!
 
-A common pattern is to store state alongside the data you're monitoring, in a dedicated `data-axolotl` table. An example of this is shown in the [configuration section](#configuration).
+## State Storage
+By default, Data Axolotl stores its state in a local SQLite database, located at `./local.db`. State is used to record history and generate alerts by tracking changes between runs. You can override where state is stored via the [config](#configuration).
+
+A common pattern is to store state alongside the data you're monitoring, in a dedicated `data-axolotl` schema. An example of this is shown in the [configuration section](#configuration).
 
 If you want to store state in a connection you don't monitor, for instance to use a different database type or connection params, see the example below.
 
 ```yaml
 connections:
+  monitored_db:
+    ...
   state_db:
-    type: postgres
+    type: snowflake
     params: {...}
     include: []  # don't monitor anything
 state:
   connection: state_db
-  prefix: db.data-axolotl
+  prefix: db.data_axolotl
 ```
 
 For production deployments, it's often useful to have a local config pointing at your production state db. That way, you can run `data-axolotl history` locally, but view production metrics. Your local connection could also use a read-only role for added safety.
@@ -252,7 +257,7 @@ Each alert shows:
 * The metric it's using
 * The previous value
 * The new value
-* The alerting strategy, and change amount.
+* The alerting strategy and change amount
 
 ## Alerting Strategies
 Data Axolotl employs a few different alerting strategies depending on the metric type and available historical data.
@@ -263,8 +268,8 @@ Data Axolotl employs a few different alerting strategies depending on the metric
     - For example:
         - Let's say that historically, row count increases by an average of 200 per run, with a standard deviation of 10.
         - This run, row count increased by 205.
-        - That would be `Δ=0.5z`, a totally normal event.
-    - Note that this is looking at historical changes, not historical values, effectively monitoring the derivative of the metric.
+        - That would be `Δ=0.5z`, a statistically common event.
+    - Note that this is looking at historical _changes_, not historical values, effectively monitoring the derivative of the metric.
 - **Percentage Changed `(+5%)`**  How much this value changed relative to the previous value. `(current - previous) / previous`. Used when there isn't enough data to get a statistical change value.
 
 # Reading Metrics
@@ -303,7 +308,7 @@ Data Axolotl employs a few different alerting strategies depending on the metric
 # Development
 Most users of data-axolotl won't need to follow the steps in this section. For only using Data Axolotl, just follow the guides above. However, if you're looking to make changes or contribute code, follow the guide below.
 
-Data Axolotl manages its dev environment with [Hatch](https://hatch.pypa.io/). Follow their [installation guide](https://hatch.pypa.io/latest/install/) to get set up on your system.
+Data Axolotl manages its dev environment with [Hatch](https://hatch.pypa.io/). Follow their [installation guide](https://hatch.pypa.io/latest/install/) to get it set up on your system.
 
 Once hatch is installed, you can run data-axolotl as follows.
 
@@ -311,7 +316,7 @@ Once hatch is installed, you can run data-axolotl as follows.
 hatch run data-axolotl [args]
 ```
 
-You can add dependencies in `pyproject.toml`, which will be auto updated whenever you do `hatch run`.
+You can add dependencies in `pyproject.toml`, which will be auto installed whenever you do `hatch run`.
 
 
 # License

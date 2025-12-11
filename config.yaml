@@ -1,28 +1,4 @@
-# LOCAL state version
-max_threads: 10
-
-run_timeout_seconds: 1200
-connection_timeout_seconds: 1200
-query_timeout_seconds: 60
-
-exclude_expensive_queries: false
-exclude_complex_queries: false
-
-connections:
-  default:
-    type: snowflake
-    params:
-      account: "IGQTQKI-QK48619"
-      user: "fred_the_sasquatch_ro"
-      private_key_file: "conf/rsa_key_snowflake.p8"
-      private_key_file_pwd: "yetisson"
-    include:
-      - template_data
-      - global_weather__climate_data_for_bi
-    exclude:
-      - template_data.public
-
-# # SF state Version
+# # LOCAL state version
 # max_threads: 10
 
 # run_timeout_seconds: 1200
@@ -41,8 +17,32 @@ connections:
 #       private_key_file: "conf/rsa_key_snowflake.p8"
 #       private_key_file_pwd: "yetisson"
 #     include:
-#       - snowflake_sample_data.tpch_sf10.orders
+#       - template_data
+#       - global_weather__climate_data_for_bi
+#     exclude:
+#       - template_data.public
 
-# state:
-#   connection: default
-#   prefix: thorntale.axolotl
+# SF state Version
+max_threads: 10
+
+run_timeout_seconds: 1200
+connection_timeout_seconds: 1200
+query_timeout_seconds: 60
+
+exclude_expensive_queries: false
+exclude_complex_queries: false
+
+connections:
+  default:
+    type: snowflake
+    params:
+      account: "IGQTQKI-QK48619"
+      user: "fred_the_sasquatch_ro"
+      private_key_file: "conf/rsa_key_snowflake.p8"
+      private_key_file_pwd: "yetisson"
+    include:
+      - snowflake_sample_data.tpch_sf10.orders
+
+state:
+  connection: default
+  prefix: thorntale.axolotl
